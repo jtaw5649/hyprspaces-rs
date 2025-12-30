@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 from datetime import date
 from pathlib import Path
 import re
@@ -13,13 +14,15 @@ LOCK_RE = re.compile(
 )
 
 
-def bump_version(version: str) -> str:
+def bump_version(version: str, bump_type: str = "patch") -> str:
     parts = version.strip().split(".")
     if len(parts) != 3:
         raise ValueError(f"Invalid version: {version}")
     major, minor, patch = (int(part) for part in parts)
-    if major == 0:
-        return "1.0.0"
+    if bump_type == "major":
+        return f"{major + 1}.0.0"
+    if bump_type == "minor":
+        return f"{major}.{minor + 1}.0"
     return f"{major}.{minor}.{patch + 1}"
 
 
@@ -94,6 +97,15 @@ def update_changelog(path: str | Path, version: str, release_date: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Bump project version")
+    parser.add_argument(
+        "--bump-type",
+        choices=["patch", "minor", "major"],
+        default="patch",
+        help="Version bump type (default: patch)",
+    )
+    args = parser.parse_args()
+
     root = Path(__file__).resolve().parents[1]
     cargo_path = root / "Cargo.toml"
     lock_path = root / "Cargo.lock"
@@ -101,7 +113,7 @@ def main() -> int:
     changelog_path = root / "CHANGELOG.md"
 
     current_version = read_cargo_version(cargo_path)
-    new_version = bump_version(current_version)
+    new_version = bump_version(current_version, args.bump_type)
 
     update_cargo_toml(cargo_path, new_version)
     update_cargo_lock(lock_path, new_version)

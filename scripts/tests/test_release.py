@@ -11,11 +11,16 @@ import release  # noqa: E402
 
 
 class ReleaseScriptTests(unittest.TestCase):
-    def test_bump_version_from_zero(self):
-        self.assertEqual(release.bump_version("0.9.0"), "1.0.0")
-
     def test_bump_version_patch(self):
-        self.assertEqual(release.bump_version("1.2.3"), "1.2.4")
+        self.assertEqual(release.bump_version("1.2.3", "patch"), "1.2.4")
+        self.assertEqual(release.bump_version("0.9.0", "patch"), "0.9.1")
+
+    def test_bump_version_minor(self):
+        self.assertEqual(release.bump_version("1.2.3", "minor"), "1.3.0")
+
+    def test_bump_version_major(self):
+        self.assertEqual(release.bump_version("1.2.3", "major"), "2.0.0")
+        self.assertEqual(release.bump_version("0.9.0", "major"), "1.0.0")
 
     def test_update_cargo_toml_version(self):
         content = textwrap.dedent(

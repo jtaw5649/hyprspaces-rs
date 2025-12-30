@@ -4,6 +4,16 @@ on:
   push:
     branches: ["master"]
   workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        default: 'patch'
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -11,6 +21,9 @@ permissions:
 
 jobs:
   verify:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore: bump version'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,10 +38,7 @@ jobs:
         run: cargo clippy --all-targets --all-features
 
   release:
-    if: |
-      github.actor != 'github-actions[bot]' &&
-      !startsWith(github.event.head_commit.message, 'chore:') &&
-      !startsWith(github.event.head_commit.message, 'docs:')
+    if: github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
     container: archlinux:latest
@@ -48,7 +58,7 @@ jobs:
         id: version
         working-directory: repo
         run: |
-          new_version=$(python scripts/release.py)
+          new_version=$(python scripts/release.py --bump-type "${{ inputs.bump_type }}")
           echo "version=$new_version" >> "$GITHUB_OUTPUT"
 
       - name: Generate .SRCINFO
@@ -74,8 +84,10 @@ jobs:
           gh pr merge --auto --squash
 
   aur-publish:
-    if: startsWith(github.event.head_commit.message, 'chore: bump version')
     needs: verify
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.event.head_commit.message, 'chore: bump version')
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
