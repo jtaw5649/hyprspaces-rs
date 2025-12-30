@@ -1,0 +1,160 @@
+use crate::config::Config;
+use crate::hyprctl::{Hyprctl, HyprctlRunner, paired_switch_batch};
+use crate::paired::{CycleDirection, cycle_target, normalize_workspace};
+use crate::setup::migration_targets;
+
+pub fn paired_switch<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    workspace: u32,
+) -> Result<(), crate::hyprctl::HyprctlError> {
+    let batch = paired_switch_batch(
+        &config.primary_monitor,
+        &config.secondary_monitor,
+        workspace,
+        config.paired_offset,
+    );
+    hyprctl.batch(&batch)?;
+    Ok(())
+}
+
+pub fn paired_cycle<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    direction: CycleDirection,
+) -> Result<(), crate::hyprctl::HyprctlError> {
+    let active_workspace = hyprctl.active_workspace_id()?;
+    let base = normalize_workspace(active_workspace, config.paired_offset);
+    let target = cycle_target(base, config.paired_offset, direction);
+    paired_switch(hyprctl, config, target)
+}
+
+pub fn paired_move_window<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    workspace: u32,
+) -> Result<(), crate::hyprctl::HyprctlError> {
+    let normalized = normalize_workspace(workspace, config.paired_offset);
+    let active_workspace = hyprctl.active_workspace_id()?;
+    let mut target = normalized;
+    if active_workspace > config.paired_offset {
+        target += config.paired_offset;
+    }
+    hyprctl.dispatch("movetoworkspacesilent", &target.to_string())?;
+    paired_switch(hyprctl, config, normalized)
+}
+
+pub fn migrate_windows<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+) -> Result<usize, crate::hyprctl::HyprctlError> {
+    let clients = hyprctl.clients()?;
+    let targets = migration_targets(&clients, config.paired_offset);
+    for (address, target) in &targets {
+        hyprctl.dispatch(
+            "movetoworkspacesilent",
+            &format!("{target},address:{address}"),
+        )?;
+    }
+    Ok(targets.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{migrate_windows, paired_cycle, paired_move_window};
+    use crate::config::Config;
+    use crate::hyprctl::{Hyprctl, HyprctlRunner};
+    use crate::paired::CycleDirection;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone)]
+    struct ScriptedRunner {
+        active_id: u32,
+        clients_json: String,
+        calls: Rc<RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl ScriptedRunner {
+        fn new(active_id: u32, clients_json: &str) -> Self {
+            Self {
+                active_id,
+                clients_json: clients_json.to_string(),
+                calls: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+    }
+
+    impl HyprctlRunner for ScriptedRunner {
+        fn run(&self, args: &[String]) -> Result<String, crate::hyprctl::HyprctlError> {
+            self.calls.borrow_mut().push(args.to_vec());
+            if args == ["-j".to_string(), "activeworkspace".to_string()] {
+                return Ok(format!(r#"{{"id":{}}}"#, self.active_id));
+            }
+            if args == ["-j".to_string(), "clients".to_string()] {
+                return Ok(self.clients_json.clone());
+            }
+            Ok("ok".to_string())
+        }
+    }
+
+    fn config() -> Config {
+        Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 10,
+        }
+    }
+
+    #[test]
+    fn cycles_to_next_workspace() {
+        let runner = ScriptedRunner::new(12, "[]");
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        paired_cycle(&hyprctl, &config(), CycleDirection::Next).expect("cycle");
+
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor HDMI-A-1 ; dispatch workspace 13 ; dispatch focusmonitor DP-1 ; dispatch workspace 3".to_string(),
+            ]
+        }));
+    }
+
+    #[test]
+    fn moves_window_and_switches_pair() {
+        let runner = ScriptedRunner::new(12, "[]");
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        paired_move_window(&hyprctl, &config(), 2).expect("move");
+
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "dispatch".to_string(),
+                "movetoworkspacesilent".to_string(),
+                "12".to_string(),
+            ]
+        }));
+    }
+
+    #[test]
+    fn migrates_windows_from_secondary() {
+        let clients_json = r#"[{"address":"0x123","workspace":{"id":12}},{"address":"0x456","workspace":{"id":1}}]"#;
+        let runner = ScriptedRunner::new(1, clients_json);
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        let migrated = migrate_windows(&hyprctl, &config()).expect("migrate");
+
+        assert_eq!(migrated, 1);
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "dispatch".to_string(),
+                "movetoworkspacesilent".to_string(),
+                "2,address:0x123".to_string(),
+            ]
+        }));
+    }
+}

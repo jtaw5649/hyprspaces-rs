@@ -1,0 +1,9 @@
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod daemon;
+pub mod hyprctl;
+pub mod paired;
+pub mod paths;
+pub mod setup;
+pub mod waybar;

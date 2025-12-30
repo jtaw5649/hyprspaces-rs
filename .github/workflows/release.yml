@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    branches: ["master"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup component add clippy
+      - name: Run tests
+        run: ./scripts/test.sh
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features
+
+  release:
+    if: github.actor != 'github-actions[bot]'
+    needs: verify
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git openssh python rust
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: repo
+
+      - name: Bump version
+        id: version
+        working-directory: repo
+        run: |
+          new_version=$(python scripts/release.py)
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate .SRCINFO
+        working-directory: repo
+        run: |
+          install -d -m 777 /tmp/makepkg
+          runuser -u nobody -- env BUILDDIR=/tmp/makepkg PKGDEST=/tmp/makepkg SRCDEST=/tmp/makepkg makepkg --printsrcinfo | tee .SRCINFO
+
+      - name: Commit release updates
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        working-directory: repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock PKGBUILD CHANGELOG.md .SRCINFO
+          git commit -m "chore: bump version to ${VERSION}" || exit 0
+          git push
+
+      - name: Push to AUR
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        working-directory: repo
+        run: |
+          mkdir -p /github/home/.ssh
+          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >> /github/home/.ssh/known_hosts
+          echo "$AUR_SSH_KEY" > /github/home/.ssh/aur
+          chmod 600 /github/home/.ssh/aur
+          export GIT_SSH_COMMAND="ssh -i /github/home/.ssh/aur -o UserKnownHostsFile=/github/home/.ssh/known_hosts"
+          git clone https://aur.archlinux.org/hyprspaces.git aur
+          cp PKGBUILD .SRCINFO hyprspaces.install aur/
+          cd aur
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add aur ssh://aur@aur.archlinux.org/hyprspaces.git
+          git add PKGBUILD .SRCINFO hyprspaces.install
+          git commit -m "sync from master ${VERSION}" || exit 0
+          git push aur master
