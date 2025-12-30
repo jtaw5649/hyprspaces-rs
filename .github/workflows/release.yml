@@ -21,7 +21,9 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'workflow_dispatch'
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore: bump version'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -82,6 +84,7 @@ jobs:
           gh pr merge --auto --squash
 
   aur-publish:
+    needs: verify
     if: |
       github.event_name == 'push' &&
       startsWith(github.event.head_commit.message, 'chore: bump version')
