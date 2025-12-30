@@ -391,6 +391,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
 
         rebalance_all(&hyprctl, &config).expect("rebalance");
@@ -414,6 +415,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
 
         assert!(rebalance_for_event(&hyprctl, &config, "monitoradded>>DP-1").expect("rebalance"));
@@ -431,6 +433,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
         let start = Instant::now();
@@ -464,6 +467,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
         let start = Instant::now();
@@ -505,6 +509,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
         let start = Instant::now();
@@ -592,6 +597,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 2,
+            workspace_count: 2,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
         let start = Instant::now();

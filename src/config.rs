@@ -2,12 +2,14 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const DEFAULT_PAIRED_OFFSET: u32 = 10;
+pub const DEFAULT_WORKSPACE_COUNT: u32 = DEFAULT_PAIRED_OFFSET;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
     pub primary_monitor: String,
     pub secondary_monitor: String,
     pub paired_offset: u32,
+    pub workspace_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -16,6 +18,8 @@ struct RawConfig {
     secondary_monitor: Option<String>,
     #[serde(default = "default_offset")]
     paired_offset: u32,
+    #[serde(default)]
+    workspace_count: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,11 +43,13 @@ impl Config {
             .secondary_monitor
             .filter(|value| !value.is_empty())
             .ok_or(ConfigError::MissingField("secondary_monitor"))?;
+        let workspace_count = raw.workspace_count.unwrap_or(raw.paired_offset);
 
         Ok(Self {
             primary_monitor,
             secondary_monitor,
-            paired_offset: raw.paired_offset,
+            paired_offset: workspace_count,
+            workspace_count,
         })
     }
 
@@ -80,6 +86,18 @@ mod tests {
         assert_eq!(config.primary_monitor, "DP-1");
         assert_eq!(config.secondary_monitor, "HDMI-A-1");
         assert_eq!(config.paired_offset, 12);
+        assert_eq!(config.workspace_count, 12);
+    }
+
+    #[test]
+    fn parses_config_with_workspace_count() {
+        let input =
+            r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1","workspace_count":6}"#;
+
+        let config = Config::from_json(input).expect("config should parse");
+
+        assert_eq!(config.paired_offset, 6);
+        assert_eq!(config.workspace_count, 6);
     }
 
     #[test]
@@ -91,6 +109,7 @@ mod tests {
         assert_eq!(config.primary_monitor, "DP-1");
         assert_eq!(config.secondary_monitor, "HDMI-A-1");
         assert_eq!(config.paired_offset, 10);
+        assert_eq!(config.workspace_count, 10);
     }
 
     #[test]
@@ -100,6 +119,18 @@ mod tests {
         let config = Config::from_json(input).expect("config should parse");
 
         assert_eq!(config.paired_offset, 10);
+        assert_eq!(config.workspace_count, 10);
+    }
+
+    #[test]
+    fn defaults_workspace_count_from_paired_offset() {
+        let input =
+            r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1","paired_offset":8}"#;
+
+        let config = Config::from_json(input).expect("config should parse");
+
+        assert_eq!(config.paired_offset, 8);
+        assert_eq!(config.workspace_count, 8);
     }
 
     #[test]
