@@ -1,6 +1,11 @@
 use crate::config::Config;
 use crate::hyprctl::{HyprlandIpc, HyprctlError};
+use std::io::{self, BufRead, BufReader};
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "native-ipc")]
+use hyprland::instance::Instance;
 
 pub fn event_name(line: &str) -> &str {
     match line.split_once(">>") {
@@ -15,6 +20,117 @@ pub fn should_rebalance(line: &str) -> bool {
 }
 
 pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
+
+pub enum DaemonEvent {
+    Line { line: String, at: Instant },
+    Timeout { at: Instant },
+    Disconnected,
+}
+
+pub enum EventSourceKind {
+    Socket2,
+    #[cfg(feature = "native-ipc")]
+    Native,
+}
+
+pub trait EventSource {
+    fn next_event(&mut self) -> io::Result<DaemonEvent>;
+}
+
+pub struct Socket2EventSource {
+    reader: BufReader<UnixStream>,
+    line: String,
+}
+
+impl Socket2EventSource {
+    pub fn new(stream: UnixStream, timeout: Duration) -> io::Result<Self> {
+        stream.set_read_timeout(Some(timeout))?;
+        Ok(Self {
+            reader: BufReader::new(stream),
+            line: String::new(),
+        })
+    }
+}
+
+impl EventSource for Socket2EventSource {
+    fn next_event(&mut self) -> io::Result<DaemonEvent> {
+        loop {
+            self.line.clear();
+            match self.reader.read_line(&mut self.line) {
+                Ok(0) => return Ok(DaemonEvent::Disconnected),
+                Ok(_) => {
+                    let trimmed = self.line.trim_end();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    return Ok(DaemonEvent::Line {
+                        line: trimmed.to_string(),
+                        at: Instant::now(),
+                    });
+                }
+                Err(err)
+                    if err.kind() == io::ErrorKind::TimedOut
+                        || err.kind() == io::ErrorKind::WouldBlock =>
+                {
+                    return Ok(DaemonEvent::Timeout { at: Instant::now() });
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+pub struct NativeEventSource {
+    receiver: std::sync::mpsc::Receiver<DaemonEvent>,
+    timeout: Duration,
+}
+
+#[cfg(feature = "native-ipc")]
+impl NativeEventSource {
+    pub fn new(timeout: Duration) -> Result<Self, HyprctlError> {
+        let instance =
+            Instance::from_current_env().map_err(|err| HyprctlError::Native(err.to_string()))?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let mut listener = hyprland::event_listener::EventListener::new();
+            let added_sender = sender.clone();
+            listener.add_monitor_added_handler(move |_| {
+                let _ = added_sender.send(DaemonEvent::Line {
+                    line: "monitoradded".to_string(),
+                    at: Instant::now(),
+                });
+            });
+            let removed_sender = sender.clone();
+            listener.add_monitor_removed_handler(move |_| {
+                let _ = removed_sender.send(DaemonEvent::Line {
+                    line: "monitorremoved".to_string(),
+                    at: Instant::now(),
+                });
+            });
+            let _ = listener.instance_start_listener(&instance);
+            let _ = sender.send(DaemonEvent::Disconnected);
+        });
+
+        Ok(Self { receiver, timeout })
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+impl EventSource for NativeEventSource {
+    fn next_event(&mut self) -> io::Result<DaemonEvent> {
+        match self.receiver.recv_timeout(self.timeout) {
+            Ok(event) => Ok(event),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Ok(DaemonEvent::Timeout { at: Instant::now() })
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Ok(DaemonEvent::Disconnected)
+            }
+        }
+    }
+}
 
 pub struct RebalanceDebounce {
     min_interval: Duration,
@@ -136,6 +252,23 @@ pub fn flush_pending_rebalance(
     flush_pending_rebalance_at(hyprctl, config, debounce, Instant::now())
 }
 
+pub fn process_event(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    debounce: &mut RebalanceDebounce,
+    event: DaemonEvent,
+) -> Result<bool, HyprctlError> {
+    match event {
+        DaemonEvent::Line { line, at } => {
+            rebalance_for_event_at(hyprctl, config, &line, debounce, at)
+        }
+        DaemonEvent::Timeout { at } => {
+            flush_pending_rebalance_at(hyprctl, config, debounce, at)
+        }
+        DaemonEvent::Disconnected => Ok(false),
+    }
+}
+
 fn rebalance_for_event_at(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
@@ -182,14 +315,17 @@ fn flush_pending_rebalance_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_name, flush_pending_rebalance_at, rebalance_all, rebalance_batch_for_event,
-        rebalance_for_event, rebalance_for_event_at, should_rebalance, socket2_path,
-        RebalanceDebounce,
+        event_name, flush_pending_rebalance_at, process_event, rebalance_all,
+        rebalance_batch_for_event, rebalance_for_event, rebalance_for_event_at,
+        should_rebalance, socket2_path, DaemonEvent, EventSource, RebalanceDebounce,
+        Socket2EventSource,
     };
     use crate::config::Config;
     use crate::hyprctl::{Hyprctl, HyprctlRunner, rebalance_batch};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -359,6 +495,93 @@ mod tests {
 
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn process_event_flushes_pending_rebalance() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+        };
+        let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let start = Instant::now();
+
+        assert!(process_event(
+            &hyprctl,
+            &config,
+            &mut debounce,
+            DaemonEvent::Line {
+                line: "monitoradded>>DP-1".to_string(),
+                at: start,
+            },
+        )
+        .expect("rebalance"));
+        assert!(!process_event(
+            &hyprctl,
+            &config,
+            &mut debounce,
+            DaemonEvent::Line {
+                line: "monitorremovedv2>>1,DP-1,desc".to_string(),
+                at: start + Duration::from_millis(50),
+            },
+        )
+        .expect("debounced"));
+        assert!(process_event(
+            &hyprctl,
+            &config,
+            &mut debounce,
+            DaemonEvent::Timeout {
+                at: start + Duration::from_millis(260),
+            },
+        )
+        .expect("flush"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn socket2_event_source_reads_lines() {
+        let (mut writer, reader) = UnixStream::pair().expect("pair");
+        let mut source =
+            Socket2EventSource::new(reader, Duration::from_secs(1)).expect("source");
+
+        writer
+            .write_all(b"monitoradded>>DP-1\n")
+            .expect("write line");
+
+        let event = source.next_event().expect("event");
+        match event {
+            DaemonEvent::Line { line, .. } => {
+                assert_eq!(line, "monitoradded>>DP-1");
+            }
+            _ => panic!("expected line event"),
+        }
+    }
+
+    #[test]
+    fn socket2_event_source_reports_disconnect() {
+        let (writer, reader) = UnixStream::pair().expect("pair");
+        let mut source =
+            Socket2EventSource::new(reader, Duration::from_secs(1)).expect("source");
+
+        drop(writer);
+
+        let event = source.next_event().expect("event");
+        assert!(matches!(event, DaemonEvent::Disconnected));
+    }
+
+    #[test]
+    fn socket2_event_source_reports_timeout() {
+        let (_writer, reader) = UnixStream::pair().expect("pair");
+        let mut source =
+            Socket2EventSource::new(reader, Duration::from_millis(10)).expect("source");
+
+        let event = source.next_event().expect("event");
+        assert!(matches!(event, DaemonEvent::Timeout { .. }));
     }
 
     #[test]
