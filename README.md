@@ -41,6 +41,8 @@ All commands accept `--ipc <hyprctl|native>`. `hyprctl` is the default; `native`
 - `hyprspaces daemon`: Rebalance paired workspaces on monitor add/remove events.
 - `hyprspaces setup install|uninstall|migrate-windows`: Manage generated Hyprland fragments.
 - `hyprspaces waybar --enable-waybar [--theme-css <path>]`: Emit Waybar JSON output and update on socket2 events.
+- `hyprspaces completions <bash|zsh|fish>`: Generate shell completion scripts.
+- `hyprspaces status`: Show daemon state, config path, and active workspace pairing.
 
 ## Configuration
 

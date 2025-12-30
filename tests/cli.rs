@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use hyprspaces::cli::{Cli, Command, PairedCommand, SetupCommand};
 
@@ -24,4 +24,25 @@ fn parses_setup_migrate_windows() {
         } => {}
         _ => panic!("unexpected command"),
     }
+}
+
+#[test]
+fn parses_completions_bash() {
+    let cli = Cli::try_parse_from(["hyprspaces", "completions", "bash"]);
+
+    assert!(cli.is_ok());
+}
+
+#[test]
+fn help_mentions_completions() {
+    let help = Cli::command().render_long_help().to_string();
+
+    assert!(help.contains("completions"));
+}
+
+#[test]
+fn parses_status_command() {
+    let cli = Cli::try_parse_from(["hyprspaces", "status"]);
+
+    assert!(cli.is_ok());
 }

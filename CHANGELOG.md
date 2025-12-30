@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `--ipc` flag with `hyprctl` default plus a `native-ipc` feature gate for the hyprland-rs backend.
+- `completions` subcommand for generating bash/zsh/fish scripts.
+- `status` subcommand for daemon/config/pairing visibility.
 
 ### Changed
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.
