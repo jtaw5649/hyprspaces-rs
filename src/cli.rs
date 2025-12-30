@@ -319,13 +319,36 @@ pub fn run() -> Result<(), CliError> {
             ensure_socket(&socket_path)?;
             daemon::rebalance_all(&hyprctl, &config)?;
             let stream = std::os::unix::net::UnixStream::connect(&socket_path)?;
-            let reader = io::BufReader::new(stream);
+            stream.set_read_timeout(Some(daemon::DEFAULT_REBALANCE_DEBOUNCE))?;
+            let mut reader = io::BufReader::new(stream);
             let mut debounce =
                 daemon::RebalanceDebounce::new(daemon::DEFAULT_REBALANCE_DEBOUNCE);
-            for line in reader.lines() {
-                let line = line?;
-                let _ =
-                    daemon::rebalance_for_event_debounced(&hyprctl, &config, &line, &mut debounce)?;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let _ = daemon::rebalance_for_event_debounced(
+                            &hyprctl,
+                            &config,
+                            trimmed,
+                            &mut debounce,
+                        )?;
+                    }
+                    Err(err)
+                        if err.kind() == io::ErrorKind::TimedOut
+                            || err.kind() == io::ErrorKind::WouldBlock =>
+                    {
+                        let _ =
+                            daemon::flush_pending_rebalance(&hyprctl, &config, &mut debounce)?;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
         }
         Command::Setup { command } => match command {

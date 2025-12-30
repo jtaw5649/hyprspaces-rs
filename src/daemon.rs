@@ -19,6 +19,8 @@ pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
 pub struct RebalanceDebounce {
     min_interval: Duration,
     last_rebalance: Option<Instant>,
+    last_event: Option<Instant>,
+    pending: bool,
 }
 
 impl RebalanceDebounce {
@@ -26,20 +28,46 @@ impl RebalanceDebounce {
         Self {
             min_interval,
             last_rebalance: None,
+            last_event: None,
+            pending: false,
         }
     }
 
-    fn allow(&mut self, now: Instant) -> bool {
+    fn record_event(&mut self, now: Instant) -> bool {
+        self.last_event = Some(now);
+        if self.should_run_now(now) {
+            self.last_rebalance = Some(now);
+            self.pending = false;
+            true
+        } else {
+            self.pending = true;
+            false
+        }
+    }
+
+    fn flush(&mut self, now: Instant) -> bool {
+        if !self.pending {
+            return false;
+        }
+        let last_event = match self.last_event {
+            Some(last_event) => last_event,
+            None => return false,
+        };
+        if now.duration_since(last_event) < self.min_interval {
+            return false;
+        }
+        if !self.should_run_now(now) {
+            return false;
+        }
+        self.pending = false;
+        self.last_rebalance = Some(now);
+        true
+    }
+
+    fn should_run_now(&self, now: Instant) -> bool {
         match self.last_rebalance {
-            None => {
-                self.last_rebalance = Some(now);
-                true
-            }
-            Some(last) if now.duration_since(last) >= self.min_interval => {
-                self.last_rebalance = Some(now);
-                true
-            }
-            Some(_) => false,
+            None => true,
+            Some(last) => now.duration_since(last) >= self.min_interval,
         }
     }
 }
@@ -100,6 +128,14 @@ pub fn rebalance_for_event_debounced<R: HyprctlRunner>(
     rebalance_for_event_at(hyprctl, config, line, debounce, Instant::now())
 }
 
+pub fn flush_pending_rebalance<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    debounce: &mut RebalanceDebounce,
+) -> Result<bool, HyprctlError> {
+    flush_pending_rebalance_at(hyprctl, config, debounce, Instant::now())
+}
+
 fn rebalance_for_event_at<R: HyprctlRunner>(
     hyprctl: &Hyprctl<R>,
     config: &Config,
@@ -113,7 +149,7 @@ fn rebalance_for_event_at<R: HyprctlRunner>(
         config.paired_offset,
         line,
     ) {
-        if debounce.allow(now) {
+        if debounce.record_event(now) {
             hyprctl.batch(&batch)?;
             Ok(true)
         } else {
@@ -124,11 +160,31 @@ fn rebalance_for_event_at<R: HyprctlRunner>(
     }
 }
 
+fn flush_pending_rebalance_at<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    debounce: &mut RebalanceDebounce,
+    now: Instant,
+) -> Result<bool, HyprctlError> {
+    if debounce.flush(now) {
+        let batch = crate::hyprctl::rebalance_batch(
+            &config.primary_monitor,
+            &config.secondary_monitor,
+            config.paired_offset,
+        );
+        hyprctl.batch(&batch)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        event_name, rebalance_all, rebalance_batch_for_event, rebalance_for_event,
-        rebalance_for_event_at, should_rebalance, socket2_path, RebalanceDebounce,
+        event_name, flush_pending_rebalance_at, rebalance_all, rebalance_batch_for_event,
+        rebalance_for_event, rebalance_for_event_at, should_rebalance, socket2_path,
+        RebalanceDebounce,
     };
     use crate::config::Config;
     use crate::hyprctl::{Hyprctl, HyprctlRunner, rebalance_batch};
@@ -262,6 +318,47 @@ mod tests {
 
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn flushes_pending_rebalance_after_burst() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+        };
+        let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let start = Instant::now();
+
+        assert!(rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitoradded>>DP-1",
+            &mut debounce,
+            start,
+        )
+        .expect("rebalance"));
+        assert!(!rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitorremovedv2>>1,DP-1,desc",
+            &mut debounce,
+            start + Duration::from_millis(50),
+        )
+        .expect("debounced"));
+
+        assert!(flush_pending_rebalance_at(
+            &hyprctl,
+            &config,
+            &mut debounce,
+            start + Duration::from_millis(260),
+        )
+        .expect("flush"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
     }
 
     #[test]
