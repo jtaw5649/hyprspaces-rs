@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Hyprctl errors now carry command, status, and JSON context for easier debugging.
+- Daemon monitor rebalance is debounced with a trailing flush to avoid missed topology updates.
+- Default paired offset is centralized for consistent config and setup behavior.
 
 ### Fixed
 

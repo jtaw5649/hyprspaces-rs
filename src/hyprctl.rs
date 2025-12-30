@@ -1,10 +1,25 @@
 use crate::paired::normalize_workspace;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
-#[error("hyprctl command failed")]
-pub struct HyprctlError;
+pub enum HyprctlError {
+    #[error("hyprctl io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("hyprctl command failed ({command}, status {status}): {stderr}")]
+    CommandFailed {
+        command: String,
+        status: i32,
+        stderr: String,
+    },
+    #[error("hyprctl parse error ({command}): {source}")]
+    Json {
+        command: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
 
 pub trait HyprctlRunner {
     fn run(&self, args: &[String]) -> Result<String, HyprctlError>;
@@ -29,7 +44,7 @@ impl<R: HyprctlRunner> Hyprctl<R> {
     pub fn active_workspace_id(&self) -> Result<u32, HyprctlError> {
         let args = vec!["-j".to_string(), "activeworkspace".to_string()];
         let output = self.runner.run(&args)?;
-        let workspace: ActiveWorkspace = serde_json::from_str(&output).map_err(|_| HyprctlError)?;
+        let workspace: ActiveWorkspace = parse_json("activeworkspace", &output)?;
         Ok(workspace.id)
     }
 
@@ -50,22 +65,21 @@ impl<R: HyprctlRunner> Hyprctl<R> {
     pub fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError> {
         let args = vec!["-j".to_string(), "monitors".to_string()];
         let output = self.runner.run(&args)?;
-        let monitors: Vec<MonitorInfo> = serde_json::from_str(&output).map_err(|_| HyprctlError)?;
+        let monitors: Vec<MonitorInfo> = parse_json("monitors", &output)?;
         Ok(monitors)
     }
 
     pub fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError> {
         let args = vec!["-j".to_string(), "workspaces".to_string()];
         let output = self.runner.run(&args)?;
-        let workspaces: Vec<WorkspaceInfo> =
-            serde_json::from_str(&output).map_err(|_| HyprctlError)?;
+        let workspaces: Vec<WorkspaceInfo> = parse_json("workspaces", &output)?;
         Ok(workspaces)
     }
 
     pub fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError> {
         let args = vec!["-j".to_string(), "clients".to_string()];
         let output = self.runner.run(&args)?;
-        let clients: Vec<ClientInfo> = serde_json::from_str(&output).map_err(|_| HyprctlError)?;
+        let clients: Vec<ClientInfo> = parse_json("clients", &output)?;
         Ok(clients)
     }
 }
@@ -87,13 +101,34 @@ impl HyprctlRunner for SystemHyprctlRunner {
         let output = Command::new(&self.program)
             .args(args)
             .output()
-            .map_err(|_| HyprctlError)?;
+            ?;
         if !output.status.success() {
-            return Err(HyprctlError);
+            return Err(HyprctlError::CommandFailed {
+                command: format_command(&self.program, args),
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr)
+                    .trim_end()
+                    .to_string(),
+            });
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .trim_end()
             .to_string())
+    }
+}
+
+fn parse_json<T: DeserializeOwned>(command: &str, output: &str) -> Result<T, HyprctlError> {
+    serde_json::from_str(output).map_err(|source| HyprctlError::Json {
+        command: command.to_string(),
+        source,
+    })
+}
+
+fn format_command(program: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{} {}", program, args.join(" "))
     }
 }
 
@@ -385,5 +420,49 @@ mod tests {
 
         let calls = runner.calls.borrow();
         assert_eq!(calls[0], vec!["-j".to_string(), "clients".to_string()]);
+    }
+
+    #[test]
+    fn monitors_parse_error_includes_command_context() {
+        let runner = StaticRunner::new("not json");
+        let hyprctl = Hyprctl::new(runner);
+
+        let err = hyprctl.monitors().expect_err("parse error");
+
+        match err {
+            super::HyprctlError::Json { command, .. } => {
+                assert_eq!(command, "monitors");
+            }
+            _ => panic!("expected json error"),
+        }
+    }
+
+    #[test]
+    fn system_runner_reports_command_failure_with_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("hyprctl");
+        let script = "#!/usr/bin/env sh\nprintf '%s' \"boom\" 1>&2\nexit 1\n";
+        fs::write(&script_path, script).expect("write script");
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("set perms");
+
+        let runner = SystemHyprctlRunner::new(script_path.to_string_lossy());
+        let err = runner
+            .run(&["-j".to_string(), "activeworkspace".to_string()])
+            .expect_err("command failure");
+
+        match err {
+            super::HyprctlError::CommandFailed {
+                command,
+                status,
+                stderr,
+            } => {
+                assert!(command.contains("activeworkspace"));
+                assert_eq!(stderr, "boom");
+                assert_eq!(status, 1);
+            }
+            _ => panic!("expected command failure"),
+        }
     }
 }

@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::path::Path;
 
+pub const DEFAULT_PAIRED_OFFSET: u32 = 10;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
     pub primary_monitor: String,
@@ -60,7 +62,7 @@ impl std::str::FromStr for Config {
 }
 
 fn default_offset() -> u32 {
-    10
+    DEFAULT_PAIRED_OFFSET
 }
 
 #[cfg(test)]
