@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::hyprctl::{Hyprctl, HyprctlError, HyprctlRunner};
+use crate::hyprctl::{HyprlandIpc, HyprctlError};
 use std::time::{Duration, Instant};
 
 pub fn event_name(line: &str) -> &str {
@@ -89,8 +89,8 @@ pub fn rebalance_batch_for_event(
     }
 }
 
-pub fn rebalance_all<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn rebalance_all(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
 ) -> Result<(), HyprctlError> {
     let batch = crate::hyprctl::rebalance_batch(
@@ -101,8 +101,8 @@ pub fn rebalance_all<R: HyprctlRunner>(
     hyprctl.batch(&batch).map(|_| ())
 }
 
-pub fn rebalance_for_event<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn rebalance_for_event(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
     line: &str,
 ) -> Result<bool, HyprctlError> {
@@ -119,8 +119,8 @@ pub fn rebalance_for_event<R: HyprctlRunner>(
     }
 }
 
-pub fn rebalance_for_event_debounced<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn rebalance_for_event_debounced(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
     line: &str,
     debounce: &mut RebalanceDebounce,
@@ -128,16 +128,16 @@ pub fn rebalance_for_event_debounced<R: HyprctlRunner>(
     rebalance_for_event_at(hyprctl, config, line, debounce, Instant::now())
 }
 
-pub fn flush_pending_rebalance<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn flush_pending_rebalance(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
     debounce: &mut RebalanceDebounce,
 ) -> Result<bool, HyprctlError> {
     flush_pending_rebalance_at(hyprctl, config, debounce, Instant::now())
 }
 
-fn rebalance_for_event_at<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn rebalance_for_event_at(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
     line: &str,
     debounce: &mut RebalanceDebounce,
@@ -160,8 +160,8 @@ fn rebalance_for_event_at<R: HyprctlRunner>(
     }
 }
 
-fn flush_pending_rebalance_at<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn flush_pending_rebalance_at(
+    hyprctl: &impl HyprlandIpc,
     config: &Config,
     debounce: &mut RebalanceDebounce,
     now: Instant,

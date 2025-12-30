@@ -29,6 +29,17 @@ pub struct Hyprctl<R> {
     runner: R,
 }
 
+
+pub trait HyprlandIpc {
+    fn batch(&self, batch: &str) -> Result<String, HyprctlError>;
+    fn active_workspace_id(&self) -> Result<u32, HyprctlError>;
+    fn dispatch(&self, dispatcher: &str, argument: &str) -> Result<String, HyprctlError>;
+    fn reload(&self) -> Result<String, HyprctlError>;
+    fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError>;
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError>;
+    fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError>;
+}
+
 impl<R> Hyprctl<R> {
     pub fn new(runner: R) -> Self {
         Self { runner }
@@ -81,6 +92,36 @@ impl<R: HyprctlRunner> Hyprctl<R> {
         let output = self.runner.run(&args)?;
         let clients: Vec<ClientInfo> = parse_json("clients", &output)?;
         Ok(clients)
+    }
+}
+
+impl<R: HyprctlRunner> HyprlandIpc for Hyprctl<R> {
+    fn batch(&self, batch: &str) -> Result<String, HyprctlError> {
+        Hyprctl::batch(self, batch)
+    }
+
+    fn active_workspace_id(&self) -> Result<u32, HyprctlError> {
+        Hyprctl::active_workspace_id(self)
+    }
+
+    fn dispatch(&self, dispatcher: &str, argument: &str) -> Result<String, HyprctlError> {
+        Hyprctl::dispatch(self, dispatcher, argument)
+    }
+
+    fn reload(&self) -> Result<String, HyprctlError> {
+        Hyprctl::reload(self)
+    }
+
+    fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError> {
+        Hyprctl::monitors(self)
+    }
+
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError> {
+        Hyprctl::workspaces(self)
+    }
+
+    fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError> {
+        Hyprctl::clients(self)
     }
 }
 

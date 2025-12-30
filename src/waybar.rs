@@ -1,4 +1,4 @@
-use crate::hyprctl::{Hyprctl, HyprctlError, HyprctlRunner, WorkspaceInfo};
+use crate::hyprctl::{HyprlandIpc, HyprctlError, WorkspaceInfo};
 use crate::paired::normalize_workspace;
 use std::path::Path;
 
@@ -107,8 +107,8 @@ pub fn render_state(
     render_json(&display)
 }
 
-pub fn state_from_hyprctl<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn state_from_hyprctl(
+    hyprctl: &impl HyprlandIpc,
     offset: u32,
     colors: &ThemeColors,
 ) -> Result<String, WaybarError> {

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `--ipc` flag with `hyprctl` default plus a `native-ipc` feature gate for the upcoming hyprland-rs backend.
 
 ### Changed
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.

@@ -9,7 +9,7 @@ use std::process::{Command as ProcessCommand, Stdio};
 use crate::commands;
 use crate::config::{Config, ConfigError};
 use crate::daemon;
-use crate::hyprctl::{Hyprctl, HyprctlError, SystemHyprctlRunner};
+use crate::hyprctl::{HyprlandIpc, Hyprctl, HyprctlError, SystemHyprctlRunner};
 use crate::paired::CycleDirection;
 use crate::paths;
 use crate::setup::{self, SetupError};
@@ -22,8 +22,17 @@ use crate::waybar::{self, WaybarError};
     about = "Paired workspaces for Hyprland."
 )]
 pub struct Cli {
+    #[arg(long, value_enum, default_value_t = IpcBackend::Hyprctl)]
+    pub ipc: IpcBackend,
     #[command(subcommand)]
     pub command: Command,
+}
+
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum IpcBackend {
+    Hyprctl,
+    Native,
 }
 
 #[derive(Subcommand, Debug)]
@@ -99,6 +108,8 @@ pub enum CliError {
     MissingSocket(PathBuf),
     #[error("waybar output requires --enable-waybar")]
     WaybarDisabled,
+    #[error("native ipc requires --features native-ipc")]
+    NativeIpcUnavailable,
     #[error("io error")]
     Io(#[from] io::Error),
     #[error("config error")]
@@ -289,10 +300,20 @@ impl WaybarArgs {
     }
 }
 
+fn build_ipc(backend: IpcBackend) -> Result<Hyprctl<SystemHyprctlRunner>, CliError> {
+    match backend {
+        IpcBackend::Hyprctl => Ok(Hyprctl::new(SystemHyprctlRunner::new("hyprctl"))),
+        IpcBackend::Native => {
+            #[cfg(feature = "native-ipc")]
+            let _ = hyprland::dispatch::DispatchType::Exec("hyprspaces");
+            Err(CliError::NativeIpcUnavailable)
+        }
+    }
+}
+
 pub fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
-    let runner = SystemHyprctlRunner::new("hyprctl");
-    let hyprctl = Hyprctl::new(runner);
+    let hyprctl = build_ipc(cli.ipc)?;
     let paths = env_paths()?;
     let bin_path = bin_path();
 
@@ -401,8 +422,8 @@ fn load_config(paths: &EnvPaths) -> Result<Config, CliError> {
     Ok(Config::from_path(&paths.config_path)?)
 }
 
-fn handle_setup_install<R: crate::hyprctl::HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn handle_setup_install(
+    hyprctl: &impl HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
     waybar: bool,
@@ -411,8 +432,8 @@ fn handle_setup_install<R: crate::hyprctl::HyprctlRunner>(
     handle_setup_install_with_launcher(hyprctl, paths, bin_path, waybar, &launcher)
 }
 
-fn handle_setup_install_with_launcher<R: crate::hyprctl::HyprctlRunner, L: DaemonLauncher>(
-    hyprctl: &Hyprctl<R>,
+fn handle_setup_install_with_launcher<L: DaemonLauncher>(
+    hyprctl: &impl HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
     waybar: bool,
@@ -434,8 +455,8 @@ fn handle_setup_install_with_launcher<R: crate::hyprctl::HyprctlRunner, L: Daemo
     Ok(())
 }
 
-fn ensure_setup<R: crate::hyprctl::HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn ensure_setup(
+    hyprctl: &impl HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
 ) -> Result<(), CliError> {
@@ -743,5 +764,48 @@ mod tests {
         ];
 
         assert!(!super::cmdline_is_daemon(&args));
+    }
+
+
+    #[test]
+    fn ipc_defaults_to_hyprctl() {
+        let cli = Cli::try_parse_from(["hyprspaces", "paired", "switch", "1"]).expect("parse");
+
+        assert!(matches!(cli.ipc, super::IpcBackend::Hyprctl));
+    }
+
+    #[test]
+    fn ipc_parses_explicit_hyprctl() {
+        let cli = Cli::try_parse_from([
+            "hyprspaces",
+            "--ipc",
+            "hyprctl",
+            "paired",
+            "switch",
+            "1",
+        ])
+        .expect("parse");
+
+        assert!(matches!(cli.ipc, super::IpcBackend::Hyprctl));
+    }
+
+    #[test]
+    fn ipc_native_requires_feature() {
+        let cli = Cli::try_parse_from([
+            "hyprspaces",
+            "--ipc",
+            "native",
+            "paired",
+            "switch",
+            "1",
+        ])
+        .expect("parse");
+
+        let err = match super::build_ipc(cli.ipc) {
+            Ok(_) => panic!("expected native ipc error"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, CliError::NativeIpcUnavailable));
     }
 }
