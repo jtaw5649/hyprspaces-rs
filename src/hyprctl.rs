@@ -521,10 +521,14 @@ mod tests {
 
     #[test]
     fn system_runner_executes_program() {
+        use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
         let script_path = dir.path().join("hyprctl");
         let script = "#!/usr/bin/env sh\nprintf '%s' \"$*\"\n";
-        fs::write(&script_path, script).expect("write script");
+        let mut file = fs::File::create(&script_path).expect("create script");
+        file.write_all(script.as_bytes()).expect("write script");
+        file.sync_all().expect("sync script");
+        drop(file);
         let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&script_path, perms).expect("set perms");
