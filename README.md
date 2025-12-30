@@ -33,7 +33,7 @@ cargo build --release
 
 ## Commands
 
-All commands accept `--ipc <hyprctl|native>`. `hyprctl` is the default; `native` is reserved for the upcoming hyprland-rs backend and requires building with `--features native-ipc`.
+All commands accept `--ipc <hyprctl|native>`. `hyprctl` is the default; `native` uses the hyprland-rs backend and requires building with `--features native-ipc`.
 
 - `hyprspaces paired switch <N>`: Switch both monitors to paired workspace N.
 - `hyprspaces paired cycle next|prev`: Cycle to the next/previous paired workspace.

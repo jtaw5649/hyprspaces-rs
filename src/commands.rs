@@ -4,7 +4,7 @@ use crate::paired::{CycleDirection, cycle_target, normalize_workspace};
 use crate::setup::migration_targets;
 
 pub fn paired_switch(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     workspace: u32,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -19,7 +19,7 @@ pub fn paired_switch(
 }
 
 pub fn paired_cycle(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     direction: CycleDirection,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -30,7 +30,7 @@ pub fn paired_cycle(
 }
 
 pub fn paired_move_window(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     workspace: u32,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -45,7 +45,7 @@ pub fn paired_move_window(
 }
 
 pub fn migrate_windows(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
 ) -> Result<usize, crate::hyprctl::HyprctlError> {
     let clients = hyprctl.clients()?;

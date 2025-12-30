@@ -90,7 +90,7 @@ pub fn rebalance_batch_for_event(
 }
 
 pub fn rebalance_all(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
 ) -> Result<(), HyprctlError> {
     let batch = crate::hyprctl::rebalance_batch(
@@ -102,7 +102,7 @@ pub fn rebalance_all(
 }
 
 pub fn rebalance_for_event(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     line: &str,
 ) -> Result<bool, HyprctlError> {
@@ -120,7 +120,7 @@ pub fn rebalance_for_event(
 }
 
 pub fn rebalance_for_event_debounced(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     line: &str,
     debounce: &mut RebalanceDebounce,
@@ -129,7 +129,7 @@ pub fn rebalance_for_event_debounced(
 }
 
 pub fn flush_pending_rebalance(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     debounce: &mut RebalanceDebounce,
 ) -> Result<bool, HyprctlError> {
@@ -137,7 +137,7 @@ pub fn flush_pending_rebalance(
 }
 
 fn rebalance_for_event_at(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     line: &str,
     debounce: &mut RebalanceDebounce,
@@ -161,7 +161,7 @@ fn rebalance_for_event_at(
 }
 
 fn flush_pending_rebalance_at(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     debounce: &mut RebalanceDebounce,
     now: Instant,

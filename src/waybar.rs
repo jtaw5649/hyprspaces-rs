@@ -108,7 +108,7 @@ pub fn render_state(
 }
 
 pub fn state_from_hyprctl(
-    hyprctl: &impl HyprlandIpc,
+    hyprctl: &dyn HyprlandIpc,
     offset: u32,
     colors: &ThemeColors,
 ) -> Result<String, WaybarError> {
