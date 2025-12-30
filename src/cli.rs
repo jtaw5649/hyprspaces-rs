@@ -987,6 +987,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 10,
+            workspace_count: 10,
         };
         let ipc = StatusIpc { active_id: 12 };
         let pid_source = RecordingPidSource { pids: vec![4242] };
@@ -1018,6 +1019,7 @@ mod tests {
             primary_monitor: "DP-1".to_string(),
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 10,
+            workspace_count: 10,
         };
         let ipc = StatusIpc { active_id: 12 };
         let pid_source = RecordingPidSource { pids: Vec::new() };

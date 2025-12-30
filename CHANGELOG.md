@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native IPC daemon event listening (hyprland-rs) when built with `--features native-ipc`.
 - `completions` subcommand for generating bash/zsh/fish scripts.
 - `status` subcommand for daemon/config/pairing visibility.
+- `workspace_count` config option (preferred) with setup-generated bindings/rules based on the configured count.
 
 ### Changed
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.

@@ -52,11 +52,13 @@ hyprspaces reads `~/.config/hyprspaces/paired.json`:
 {
   "primary_monitor": "DP-1",
   "secondary_monitor": "DP-2",
-  "paired_offset": 10
+  "workspace_count": 10
 }
 ```
 
-`paired_offset` defines how many workspaces are reserved per monitor. Workspace 3 on the primary pairs with workspace 13 on the secondary when the offset is 10.
+`workspace_count` defines how many workspaces are reserved per monitor and sets the pairing offset. Workspace 3 on the primary pairs with workspace 13 on the secondary when the count is 10.
+
+`paired_offset` is still accepted for legacy configs. If both keys are present, `workspace_count` takes precedence.
 
 ## Default Keybinds
 
@@ -64,8 +66,8 @@ hyprspaces reads `~/.config/hyprspaces/paired.json`:
 
 | Shortcut | Action |
 | --- | --- |
-| `Super+1…0` | Focus paired workspace (1–10) on both monitors |
-| `Super+Shift+1…0` | Move focused window to paired workspace (1–10) |
+| `Super+1…0` | Focus paired workspace (1–N) on both monitors (default 10) |
+| `Super+Shift+1…0` | Move focused window to paired workspace (1–N) (default 10) |
 | `Super+Scroll Up` | Cycle to previous paired workspace |
 | `Super+Scroll Down` | Cycle to next paired workspace |
 
