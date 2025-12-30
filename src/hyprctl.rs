@@ -603,17 +603,13 @@ mod tests {
 
     #[test]
     fn system_runner_reports_command_failure_with_context() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let script_path = dir.path().join("hyprctl");
-        let script = "#!/usr/bin/env sh\nprintf '%s' \"boom\" 1>&2\nexit 1\n";
-        fs::write(&script_path, script).expect("write script");
-        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).expect("set perms");
-
-        let runner = SystemHyprctlRunner::new(script_path.to_string_lossy());
+        let runner = SystemHyprctlRunner::new("/bin/sh");
         let err = runner
-            .run(&["-j".to_string(), "activeworkspace".to_string()])
+            .run(&[
+                "-c".to_string(),
+                "printf '%s' \"boom\" 1>&2; exit 1".to_string(),
+                "activeworkspace".to_string(),
+            ])
             .expect_err("command failure");
 
         match err {
