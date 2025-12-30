@@ -3,9 +3,11 @@ name: Release
 on:
   push:
     branches: ["master"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   verify:
@@ -33,7 +35,7 @@ jobs:
     steps:
       - name: Install tooling
         run: |
-          pacman -Syu --noconfirm --needed base-devel git openssh python rust
+          pacman -Syu --noconfirm --needed base-devel git openssh python rust github-cli
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -55,28 +57,47 @@ jobs:
           install -d -m 777 /tmp/makepkg
           runuser -u nobody -- env BUILDDIR=/tmp/makepkg PKGDEST=/tmp/makepkg SRCDEST=/tmp/makepkg makepkg --printsrcinfo | tee .SRCINFO
 
-      - name: Commit release updates
+      - name: Create release PR
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         working-directory: repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          branch="release/v${VERSION}"
+          git checkout -b "$branch"
           git add Cargo.toml Cargo.lock PKGBUILD CHANGELOG.md .SRCINFO
           git commit -m "chore: bump version to ${VERSION}" || exit 0
-          git push
+          git push -u origin "$branch"
+          gh pr create --title "chore: bump version to ${VERSION}" --body "Automated version bump." --base master
+          gh pr merge --auto --squash
+
+  aur-publish:
+    if: startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: verify
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git openssh
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Push to AUR
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-        working-directory: repo
         run: |
-          mkdir -p /github/home/.ssh
-          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >> /github/home/.ssh/known_hosts
-          echo "$AUR_SSH_KEY" > /github/home/.ssh/aur
-          chmod 600 /github/home/.ssh/aur
-          export GIT_SSH_COMMAND="ssh -i /github/home/.ssh/aur -o UserKnownHostsFile=/github/home/.ssh/known_hosts"
+          version=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >> ~/.ssh/known_hosts
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o UserKnownHostsFile=~/.ssh/known_hosts"
           git clone https://aur.archlinux.org/hyprspaces.git aur
           cp PKGBUILD .SRCINFO hyprspaces.install aur/
           cd aur
@@ -84,5 +105,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add aur ssh://aur@aur.archlinux.org/hyprspaces.git
           git add PKGBUILD .SRCINFO hyprspaces.install
-          git commit -m "sync from master ${VERSION}" || exit 0
+          git commit -m "sync from master ${version}" || exit 0
           git push aur master
