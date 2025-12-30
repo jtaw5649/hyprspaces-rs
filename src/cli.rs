@@ -443,7 +443,8 @@ pub fn run() -> Result<(), CliError> {
         }
         Command::Status => {
             let config = load_config(&paths)?;
-            let output = status_output(hyprctl, &config, &paths)?;
+            let pid_source = SystemDaemonPidSource;
+            let output = status_output(hyprctl, &config, &paths, &pid_source)?;
             write_stdout(&output)?;
         }
         Command::Completions { .. } => {}
@@ -460,9 +461,17 @@ fn status_output(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
     paths: &EnvPaths,
+    pid_source: &dyn DaemonPidSource,
 ) -> Result<String, CliError> {
     let daemon = match read_daemon_pid(&paths.base_dir)? {
-        Some(pid) => format!("Daemon: running (PID {pid})"),
+        Some(pid) => {
+            let pids = pid_source.pids()?;
+            if pids.contains(&pid) {
+                format!("Daemon: running (PID {pid})")
+            } else {
+                "Daemon: stopped".to_string()
+            }
+        }
         None => "Daemon: stopped".to_string(),
     };
     let active = hyprctl.active_workspace_id()?;
@@ -946,8 +955,9 @@ mod tests {
             paired_offset: 10,
         };
         let ipc = StatusIpc { active_id: 12 };
+        let pid_source = RecordingPidSource { pids: vec![4242] };
 
-        let output = super::status_output(&ipc, &config, &paths).expect("status");
+        let output = super::status_output(&ipc, &config, &paths, &pid_source).expect("status");
 
         assert!(output.contains("Daemon: running (PID 4242)"));
         assert!(output.contains(&format!(
@@ -958,5 +968,28 @@ mod tests {
         assert!(output.contains("Secondary: HDMI-A-1"));
         assert!(output.contains("Offset:    10"));
         assert!(output.contains("Active workspace pair: 2 / 12"));
+    }
+
+    #[test]
+    fn status_stops_when_pid_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        super::write_daemon_pid(dir.path(), 4242).expect("write pid");
+        let paths = EnvPaths {
+            base_dir: dir.path().to_path_buf(),
+            config_path: dir.path().join("paired.json"),
+            hypr_config_dir: dir.path().join("hypr"),
+            waybar_css: dir.path().join("waybar.css"),
+        };
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 10,
+        };
+        let ipc = StatusIpc { active_id: 12 };
+        let pid_source = RecordingPidSource { pids: Vec::new() };
+
+        let output = super::status_output(&ipc, &config, &paths, &pid_source).expect("status");
+
+        assert!(output.contains("Daemon: stopped"));
     }
 }
