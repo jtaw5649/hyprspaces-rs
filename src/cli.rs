@@ -1,4 +1,5 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, Shell};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -12,7 +13,7 @@ use crate::daemon;
 use crate::hyprctl::{HyprlandIpc, Hyprctl, HyprctlError, SystemHyprctlRunner};
 #[cfg(feature = "native-ipc")]
 use crate::hyprctl::NativeIpc;
-use crate::paired::CycleDirection;
+use crate::paired::{CycleDirection, normalize_workspace};
 use crate::paths;
 use crate::setup::{self, SetupError};
 use crate::waybar::{self, WaybarError};
@@ -49,6 +50,11 @@ pub enum Command {
         command: SetupCommand,
     },
     Waybar(WaybarArgs),
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -321,13 +327,22 @@ fn build_ipc(backend: IpcBackend) -> Result<Box<dyn HyprlandIpc>, CliError> {
 }
 
 pub fn run() -> Result<(), CliError> {
-    let cli = Cli::parse();
-    let hyprctl = build_ipc(cli.ipc)?;
+    let Cli { ipc, command } = Cli::parse();
+
+    if let Command::Completions { shell } = &command {
+        let mut cmd = Cli::command();
+        let mut output = Vec::new();
+        generate(*shell, &mut cmd, "hyprspaces", &mut output);
+        write_stdout_bytes(&output)?;
+        return Ok(());
+    }
+
+    let hyprctl = build_ipc(ipc)?;
     let hyprctl = hyprctl.as_ref();
     let paths = env_paths()?;
     let bin_path = bin_path();
 
-    match cli.command {
+    match command {
         Command::Paired { command } => {
             ensure_setup(hyprctl, &paths, &bin_path)?;
             let config = load_config(&paths)?;
@@ -426,6 +441,13 @@ pub fn run() -> Result<(), CliError> {
                 }
             }
         }
+        Command::Status => {
+            let config = load_config(&paths)?;
+            let pid_source = SystemDaemonPidSource;
+            let output = status_output(hyprctl, &config, &paths, &pid_source)?;
+            write_stdout(&output)?;
+        }
+        Command::Completions { .. } => {}
     }
 
     Ok(())
@@ -433,6 +455,36 @@ pub fn run() -> Result<(), CliError> {
 
 fn load_config(paths: &EnvPaths) -> Result<Config, CliError> {
     Ok(Config::from_path(&paths.config_path)?)
+}
+
+fn status_output(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    paths: &EnvPaths,
+    pid_source: &dyn DaemonPidSource,
+) -> Result<String, CliError> {
+    let daemon = match read_daemon_pid(&paths.base_dir)? {
+        Some(pid) => {
+            let pids = pid_source.pids()?;
+            if pids.contains(&pid) {
+                format!("Daemon: running (PID {pid})")
+            } else {
+                "Daemon: stopped".to_string()
+            }
+        }
+        None => "Daemon: stopped".to_string(),
+    };
+    let active = hyprctl.active_workspace_id()?;
+    let primary_workspace = normalize_workspace(active, config.paired_offset);
+    let secondary_workspace = primary_workspace + config.paired_offset;
+    let config_path = paths.config_path.display();
+
+    Ok(format!(
+        "{daemon}\nConfig: {config_path}\n\nPaired Monitors:\n  Primary:   {primary}\n  Secondary: {secondary}\n  Offset:    {offset}\n\nActive workspace pair: {primary_workspace} / {secondary_workspace}",
+        primary = config.primary_monitor,
+        secondary = config.secondary_monitor,
+        offset = config.paired_offset,
+    ))
 }
 
 fn handle_setup_install(
@@ -541,6 +593,17 @@ fn write_stdout(line: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+fn write_stdout_bytes(bytes: &[u8]) -> Result<(), CliError> {
+    let mut stdout = io::stdout();
+    if let Err(err) = stdout.write_all(bytes) {
+        if err.kind() == io::ErrorKind::BrokenPipe {
+            return Ok(());
+        }
+        return Err(err.into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -548,7 +611,10 @@ mod tests {
         Cli, CliError, Command, EnvPaths, SetupCommand, WaybarArgs,
         handle_setup_install_with_launcher,
     };
-    use crate::hyprctl::{Hyprctl, HyprctlRunner};
+    use crate::config::Config;
+    use crate::hyprctl::{
+        ClientInfo, Hyprctl, HyprctlError, HyprctlRunner, HyprlandIpc, MonitorInfo, WorkspaceInfo,
+    };
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
@@ -590,6 +656,40 @@ mod tests {
     impl super::DaemonPidSource for RecordingPidSource {
         fn pids(&self) -> Result<Vec<u32>, CliError> {
             Ok(self.pids.clone())
+        }
+    }
+
+    struct StatusIpc {
+        active_id: u32,
+    }
+
+    impl HyprlandIpc for StatusIpc {
+        fn batch(&self, _batch: &str) -> Result<String, HyprctlError> {
+            Ok("ok".to_string())
+        }
+
+        fn active_workspace_id(&self) -> Result<u32, HyprctlError> {
+            Ok(self.active_id)
+        }
+
+        fn dispatch(&self, _dispatcher: &str, _argument: &str) -> Result<String, HyprctlError> {
+            Ok("ok".to_string())
+        }
+
+        fn reload(&self) -> Result<String, HyprctlError> {
+            Ok("ok".to_string())
+        }
+
+        fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError> {
+            Ok(Vec::new())
+        }
+
+        fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError> {
+            Ok(Vec::new())
+        }
+
+        fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError> {
+            Ok(Vec::new())
         }
     }
 
@@ -837,5 +937,59 @@ mod tests {
         .expect("parse");
 
         let _ = super::build_ipc(cli.ipc).expect("native ipc");
+    }
+
+    #[test]
+    fn status_reports_daemon_and_pair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        super::write_daemon_pid(dir.path(), 4242).expect("write pid");
+        let paths = EnvPaths {
+            base_dir: dir.path().to_path_buf(),
+            config_path: dir.path().join("paired.json"),
+            hypr_config_dir: dir.path().join("hypr"),
+            waybar_css: dir.path().join("waybar.css"),
+        };
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 10,
+        };
+        let ipc = StatusIpc { active_id: 12 };
+        let pid_source = RecordingPidSource { pids: vec![4242] };
+
+        let output = super::status_output(&ipc, &config, &paths, &pid_source).expect("status");
+
+        assert!(output.contains("Daemon: running (PID 4242)"));
+        assert!(output.contains(&format!(
+            "Config: {}",
+            paths.config_path.display()
+        )));
+        assert!(output.contains("Primary:   DP-1"));
+        assert!(output.contains("Secondary: HDMI-A-1"));
+        assert!(output.contains("Offset:    10"));
+        assert!(output.contains("Active workspace pair: 2 / 12"));
+    }
+
+    #[test]
+    fn status_stops_when_pid_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        super::write_daemon_pid(dir.path(), 4242).expect("write pid");
+        let paths = EnvPaths {
+            base_dir: dir.path().to_path_buf(),
+            config_path: dir.path().join("paired.json"),
+            hypr_config_dir: dir.path().join("hypr"),
+            waybar_css: dir.path().join("waybar.css"),
+        };
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 10,
+        };
+        let ipc = StatusIpc { active_id: 12 };
+        let pid_source = RecordingPidSource { pids: Vec::new() };
+
+        let output = super::status_output(&ipc, &config, &paths, &pid_source).expect("status");
+
+        assert!(output.contains("Daemon: stopped"));
     }
 }
