@@ -4,8 +4,10 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::time::Duration;
 
 use crate::commands;
 use crate::config::{Config, ConfigError};
@@ -326,6 +328,41 @@ fn build_ipc(backend: IpcBackend) -> Result<Box<dyn HyprlandIpc>, CliError> {
     }
 }
 
+fn event_source_kind(backend: IpcBackend) -> daemon::EventSourceKind {
+    match backend {
+        IpcBackend::Hyprctl => daemon::EventSourceKind::Socket2,
+        IpcBackend::Native => {
+            #[cfg(feature = "native-ipc")]
+            {
+                daemon::EventSourceKind::Native
+            }
+            #[cfg(not(feature = "native-ipc"))]
+            {
+                daemon::EventSourceKind::Socket2
+            }
+        }
+    }
+}
+
+fn build_event_source(
+    backend: IpcBackend,
+    socket_path: &Path,
+    timeout: Duration,
+) -> Result<Box<dyn daemon::EventSource>, CliError> {
+    match event_source_kind(backend) {
+        daemon::EventSourceKind::Socket2 => {
+            let stream = UnixStream::connect(socket_path)?;
+            let source = daemon::Socket2EventSource::new(stream, timeout)?;
+            Ok(Box::new(source))
+        }
+        #[cfg(feature = "native-ipc")]
+        daemon::EventSourceKind::Native => {
+            let source = daemon::NativeEventSource::new(timeout)?;
+            Ok(Box::new(source))
+        }
+    }
+}
+
 pub fn run() -> Result<(), CliError> {
     let Cli { ipc, command } = Cli::parse();
 
@@ -364,15 +401,15 @@ pub fn run() -> Result<(), CliError> {
             let socket_path = socket2_path()?;
             ensure_socket(&socket_path)?;
             daemon::rebalance_all(hyprctl, &config)?;
-            let stream = std::os::unix::net::UnixStream::connect(&socket_path)?;
-            let mut source = daemon::Socket2EventSource::new(
-                stream,
+            let mut source = build_event_source(
+                ipc,
+                &socket_path,
                 daemon::DEFAULT_REBALANCE_DEBOUNCE,
             )?;
             let mut debounce =
                 daemon::RebalanceDebounce::new(daemon::DEFAULT_REBALANCE_DEBOUNCE);
             loop {
-                let event = daemon::EventSource::next_event(&mut source)?;
+                let event = daemon::EventSource::next_event(&mut *source)?;
                 match event {
                     daemon::DaemonEvent::Disconnected => break,
                     event => {
@@ -593,6 +630,7 @@ mod tests {
         handle_setup_install_with_launcher,
     };
     use crate::config::Config;
+    use crate::daemon;
     use crate::hyprctl::{
         ClientInfo, Hyprctl, HyprctlError, HyprctlRunner, HyprlandIpc, MonitorInfo, WorkspaceInfo,
     };
@@ -918,6 +956,21 @@ mod tests {
         .expect("parse");
 
         let _ = super::build_ipc(cli.ipc).expect("native ipc");
+    }
+
+    #[test]
+    fn event_source_defaults_to_socket2() {
+        let kind = super::event_source_kind(super::IpcBackend::Hyprctl);
+
+        assert!(matches!(kind, daemon::EventSourceKind::Socket2));
+    }
+
+    #[cfg(feature = "native-ipc")]
+    #[test]
+    fn event_source_uses_native_when_requested() {
+        let kind = super::event_source_kind(super::IpcBackend::Native);
+
+        assert!(matches!(kind, daemon::EventSourceKind::Native));
     }
 
     #[test]

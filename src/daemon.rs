@@ -4,6 +4,9 @@ use std::io::{self, BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "native-ipc")]
+use hyprland::instance::Instance;
+
 pub fn event_name(line: &str) -> &str {
     match line.split_once(">>") {
         Some((name, _)) => name,
@@ -22,6 +25,12 @@ pub enum DaemonEvent {
     Line { line: String, at: Instant },
     Timeout { at: Instant },
     Disconnected,
+}
+
+pub enum EventSourceKind {
+    Socket2,
+    #[cfg(feature = "native-ipc")]
+    Native,
 }
 
 pub trait EventSource {
@@ -66,6 +75,58 @@ impl EventSource for Socket2EventSource {
                     return Ok(DaemonEvent::Timeout { at: Instant::now() });
                 }
                 Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+pub struct NativeEventSource {
+    receiver: std::sync::mpsc::Receiver<DaemonEvent>,
+    timeout: Duration,
+}
+
+#[cfg(feature = "native-ipc")]
+impl NativeEventSource {
+    pub fn new(timeout: Duration) -> Result<Self, HyprctlError> {
+        let instance =
+            Instance::from_current_env().map_err(|err| HyprctlError::Native(err.to_string()))?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let mut listener = hyprland::event_listener::EventListener::new();
+            let added_sender = sender.clone();
+            listener.add_monitor_added_handler(move |_| {
+                let _ = added_sender.send(DaemonEvent::Line {
+                    line: "monitoradded".to_string(),
+                    at: Instant::now(),
+                });
+            });
+            let removed_sender = sender.clone();
+            listener.add_monitor_removed_handler(move |_| {
+                let _ = removed_sender.send(DaemonEvent::Line {
+                    line: "monitorremoved".to_string(),
+                    at: Instant::now(),
+                });
+            });
+            let _ = listener.instance_start_listener(&instance);
+            let _ = sender.send(DaemonEvent::Disconnected);
+        });
+
+        Ok(Self { receiver, timeout })
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+impl EventSource for NativeEventSource {
+    fn next_event(&mut self) -> io::Result<DaemonEvent> {
+        match self.receiver.recv_timeout(self.timeout) {
+            Ok(event) => Ok(event),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Ok(DaemonEvent::Timeout { at: Instant::now() })
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Ok(DaemonEvent::Disconnected)
             }
         }
     }
