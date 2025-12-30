@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `--ipc` flag with `hyprctl` default plus a `native-ipc` feature gate for the hyprland-rs backend.
+- Native IPC daemon event listening (hyprland-rs) when built with `--features native-ipc`.
 - `completions` subcommand for generating bash/zsh/fish scripts.
 - `status` subcommand for daemon/config/pairing visibility.
 
@@ -16,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.
 - Daemon monitor rebalance is debounced with a trailing flush to avoid missed topology updates.
 - Default paired offset is centralized for consistent config and setup behavior.
+- CI runs feature tests for `native-ipc` builds alongside default tests.
 
 ### Fixed
 
