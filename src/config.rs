@@ -101,6 +101,16 @@ mod tests {
     }
 
     #[test]
+    fn workspace_count_takes_precedence_over_paired_offset() {
+        let input = r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1","paired_offset":8,"workspace_count":6}"#;
+
+        let config = Config::from_json(input).expect("config should parse");
+
+        assert_eq!(config.paired_offset, 6);
+        assert_eq!(config.workspace_count, 6);
+    }
+
+    #[test]
     fn parses_config_via_from_str_trait() {
         let input = r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1"}"#;
 
