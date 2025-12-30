@@ -26,14 +26,15 @@ pub fn render_config(primary: &str, secondary: &str, offset: u32) -> String {
         "primary_monitor": primary,
         "secondary_monitor": secondary,
         "paired_offset": offset,
+        "workspace_count": offset,
     })
     .to_string()
 }
 
-pub fn render_bindings(bin_path: &str) -> String {
+pub fn render_bindings(bin_path: &str, workspace_count: u32) -> String {
     let mut lines = Vec::new();
     lines.push("# hyprspaces keybindings".to_string());
-    for i in 1..=10 {
+    for i in 1..=workspace_count {
         let code = i + 9;
         lines.push(format!(
             "bindd = SUPER, code:{code}, Paired workspace {i}, exec, {bin_path} paired switch {i}"
@@ -45,7 +46,7 @@ pub fn render_bindings(bin_path: &str) -> String {
     lines.push(format!(
         "bindd = SUPER, mouse_down, Paired next, exec, {bin_path} paired cycle next"
     ));
-    for i in 1..=10 {
+    for i in 1..=workspace_count {
         let code = i + 9;
         lines.push(format!(
             "bindd = SUPER SHIFT, code:{code}, Move to paired {i}, exec, {bin_path} paired move-window {i}"
@@ -242,11 +243,13 @@ pub fn install(
     monitors: Option<&[MonitorInfo]>,
 ) -> Result<(), SetupError> {
     ensure_config(config_path, monitors)?;
-    fs::create_dir_all(base_dir)?;
-    fs::write(base_dir.join("bindings.conf"), render_bindings(bin_path))?;
-    fs::write(base_dir.join("autostart.conf"), render_autostart(bin_path))?;
-
     let config_data = read_config_data(config_path)?;
+    fs::create_dir_all(base_dir)?;
+    fs::write(
+        base_dir.join("bindings.conf"),
+        render_bindings(bin_path, config_data.workspace_count),
+    )?;
+    fs::write(base_dir.join("autostart.conf"), render_autostart(bin_path))?;
     fs::write(
         base_dir.join("workspace-rules.conf"),
         render_workspace_rules(
@@ -296,14 +299,24 @@ pub fn uninstall(base_dir: &Path, hypr_config_dir: &Path) -> Result<(), SetupErr
     Ok(())
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug)]
 struct ConfigData {
-    #[serde(default)]
     primary_monitor: String,
-    #[serde(default)]
     secondary_monitor: String,
+    paired_offset: u32,
+    workspace_count: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawConfigData {
+    #[serde(default)]
+    primary_monitor: Option<String>,
+    #[serde(default)]
+    secondary_monitor: Option<String>,
     #[serde(default = "default_offset")]
     paired_offset: u32,
+    #[serde(default)]
+    workspace_count: Option<u32>,
 }
 
 fn default_offset() -> u32 {
@@ -312,12 +325,19 @@ fn default_offset() -> u32 {
 
 fn read_config_data(path: &Path) -> Result<ConfigData, SetupError> {
     let contents = fs::read_to_string(path)?;
-    let data = serde_json::from_str(&contents).unwrap_or(ConfigData {
-        primary_monitor: String::new(),
-        secondary_monitor: String::new(),
+    let raw = serde_json::from_str(&contents).unwrap_or(RawConfigData {
+        primary_monitor: None,
+        secondary_monitor: None,
         paired_offset: DEFAULT_PAIRED_OFFSET,
+        workspace_count: None,
     });
-    Ok(data)
+    let workspace_count = raw.workspace_count.unwrap_or(raw.paired_offset);
+    Ok(ConfigData {
+        primary_monitor: raw.primary_monitor.unwrap_or_default(),
+        secondary_monitor: raw.secondary_monitor.unwrap_or_default(),
+        paired_offset: workspace_count,
+        workspace_count,
+    })
 }
 
 fn update_source_block(path: &Path, source_line: &str) -> Result<(), SetupError> {
@@ -382,6 +402,7 @@ mod tests {
         assert_eq!(value["primary_monitor"], "");
         assert_eq!(value["secondary_monitor"], "");
         assert_eq!(value["paired_offset"], 10);
+        assert_eq!(value["workspace_count"], 10);
     }
 
     #[test]
@@ -392,13 +413,16 @@ mod tests {
         assert_eq!(value["primary_monitor"], "DP-1");
         assert_eq!(value["secondary_monitor"], "HDMI-A-1");
         assert_eq!(value["paired_offset"], 12);
+        assert_eq!(value["workspace_count"], 12);
     }
 
     #[test]
     fn renders_bindings_with_bin_path() {
-        let bindings = render_bindings("hyprspaces");
+        let bindings = render_bindings("hyprspaces", 3);
 
         assert!(bindings.contains("hyprspaces paired switch 1"));
+        assert!(bindings.contains("hyprspaces paired switch 3"));
+        assert!(!bindings.contains("hyprspaces paired switch 4"));
         assert!(bindings.contains("hyprspaces paired cycle next"));
     }
 
