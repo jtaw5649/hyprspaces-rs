@@ -1,3 +1,4 @@
+use crate::config::DEFAULT_PAIRED_OFFSET;
 use crate::hyprctl::{ClientInfo, MonitorInfo};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ pub fn select_monitors(monitors: &[MonitorInfo]) -> Option<(String, String)> {
 }
 
 pub fn render_default_config() -> String {
-    render_config("", "", 10)
+    render_config("", "", DEFAULT_PAIRED_OFFSET)
 }
 
 pub fn render_config(primary: &str, secondary: &str, offset: u32) -> String {
@@ -306,7 +307,7 @@ struct ConfigData {
 }
 
 fn default_offset() -> u32 {
-    10
+    DEFAULT_PAIRED_OFFSET
 }
 
 fn read_config_data(path: &Path) -> Result<ConfigData, SetupError> {
@@ -314,7 +315,7 @@ fn read_config_data(path: &Path) -> Result<ConfigData, SetupError> {
     let data = serde_json::from_str(&contents).unwrap_or(ConfigData {
         primary_monitor: String::new(),
         secondary_monitor: String::new(),
-        paired_offset: 10,
+        paired_offset: DEFAULT_PAIRED_OFFSET,
     });
     Ok(data)
 }

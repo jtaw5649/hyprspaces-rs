@@ -320,9 +320,12 @@ pub fn run() -> Result<(), CliError> {
             daemon::rebalance_all(&hyprctl, &config)?;
             let stream = std::os::unix::net::UnixStream::connect(&socket_path)?;
             let reader = io::BufReader::new(stream);
+            let mut debounce =
+                daemon::RebalanceDebounce::new(daemon::DEFAULT_REBALANCE_DEBOUNCE);
             for line in reader.lines() {
                 let line = line?;
-                let _ = daemon::rebalance_for_event(&hyprctl, &config, &line)?;
+                let _ =
+                    daemon::rebalance_for_event_debounced(&hyprctl, &config, &line, &mut debounce)?;
             }
         }
         Command::Setup { command } => match command {

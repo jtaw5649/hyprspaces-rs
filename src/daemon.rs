@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::hyprctl::{Hyprctl, HyprctlError, HyprctlRunner};
+use std::time::{Duration, Instant};
 
 pub fn event_name(line: &str) -> &str {
     match line.split_once(">>") {
@@ -11,6 +12,36 @@ pub fn event_name(line: &str) -> &str {
 pub fn should_rebalance(line: &str) -> bool {
     let name = event_name(line);
     name.starts_with("monitoradded") || name.starts_with("monitorremoved")
+}
+
+pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
+
+pub struct RebalanceDebounce {
+    min_interval: Duration,
+    last_rebalance: Option<Instant>,
+}
+
+impl RebalanceDebounce {
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            min_interval,
+            last_rebalance: None,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        match self.last_rebalance {
+            None => {
+                self.last_rebalance = Some(now);
+                true
+            }
+            Some(last) if now.duration_since(last) >= self.min_interval => {
+                self.last_rebalance = Some(now);
+                true
+            }
+            Some(_) => false,
+        }
+    }
 }
 
 pub fn socket2_path(runtime_dir: &str, instance_signature: &str) -> String {
@@ -60,16 +91,50 @@ pub fn rebalance_for_event<R: HyprctlRunner>(
     }
 }
 
+pub fn rebalance_for_event_debounced<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    line: &str,
+    debounce: &mut RebalanceDebounce,
+) -> Result<bool, HyprctlError> {
+    rebalance_for_event_at(hyprctl, config, line, debounce, Instant::now())
+}
+
+fn rebalance_for_event_at<R: HyprctlRunner>(
+    hyprctl: &Hyprctl<R>,
+    config: &Config,
+    line: &str,
+    debounce: &mut RebalanceDebounce,
+    now: Instant,
+) -> Result<bool, HyprctlError> {
+    if let Some(batch) = rebalance_batch_for_event(
+        &config.primary_monitor,
+        &config.secondary_monitor,
+        config.paired_offset,
+        line,
+    ) {
+        if debounce.allow(now) {
+            hyprctl.batch(&batch)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    } else {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         event_name, rebalance_all, rebalance_batch_for_event, rebalance_for_event,
-        should_rebalance, socket2_path,
+        rebalance_for_event_at, should_rebalance, socket2_path, RebalanceDebounce,
     };
     use crate::config::Config;
     use crate::hyprctl::{Hyprctl, HyprctlRunner, rebalance_batch};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn extracts_event_name_from_socket2_line() {
@@ -164,5 +229,71 @@ mod tests {
 
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn debounces_rebalance_events_within_window() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+        };
+        let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let start = Instant::now();
+
+        assert!(rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitoradded>>DP-1",
+            &mut debounce,
+            start,
+        )
+        .expect("rebalance"));
+        assert!(!rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitorremovedv2>>1,DP-1,desc",
+            &mut debounce,
+            start + Duration::from_millis(50),
+        )
+        .expect("debounced"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn allows_rebalance_after_debounce_window() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+        };
+        let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let start = Instant::now();
+
+        assert!(rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitoradded>>DP-1",
+            &mut debounce,
+            start,
+        )
+        .expect("rebalance"));
+        assert!(rebalance_for_event_at(
+            &hyprctl,
+            &config,
+            "monitorremovedv2>>1,DP-1,desc",
+            &mut debounce,
+            start + Duration::from_millis(250),
+        )
+        .expect("rebalance again"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
     }
 }
