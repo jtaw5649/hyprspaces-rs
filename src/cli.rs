@@ -9,7 +9,9 @@ use std::process::{Command as ProcessCommand, Stdio};
 use crate::commands;
 use crate::config::{Config, ConfigError};
 use crate::daemon;
-use crate::hyprctl::{Hyprctl, HyprctlError, SystemHyprctlRunner};
+use crate::hyprctl::{HyprlandIpc, Hyprctl, HyprctlError, SystemHyprctlRunner};
+#[cfg(feature = "native-ipc")]
+use crate::hyprctl::NativeIpc;
 use crate::paired::CycleDirection;
 use crate::paths;
 use crate::setup::{self, SetupError};
@@ -22,8 +24,17 @@ use crate::waybar::{self, WaybarError};
     about = "Paired workspaces for Hyprland."
 )]
 pub struct Cli {
+    #[arg(long, value_enum, default_value_t = IpcBackend::Hyprctl)]
+    pub ipc: IpcBackend,
     #[command(subcommand)]
     pub command: Command,
+}
+
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum IpcBackend {
+    Hyprctl,
+    Native,
 }
 
 #[derive(Subcommand, Debug)]
@@ -99,6 +110,8 @@ pub enum CliError {
     MissingSocket(PathBuf),
     #[error("waybar output requires --enable-waybar")]
     WaybarDisabled,
+    #[error("native ipc requires --features native-ipc")]
+    NativeIpcUnavailable,
     #[error("io error")]
     Io(#[from] io::Error),
     #[error("config error")]
@@ -289,35 +302,53 @@ impl WaybarArgs {
     }
 }
 
+fn build_ipc(backend: IpcBackend) -> Result<Box<dyn HyprlandIpc>, CliError> {
+    match backend {
+        IpcBackend::Hyprctl => Ok(Box::new(Hyprctl::new(SystemHyprctlRunner::new(
+            "hyprctl",
+        )))),
+        IpcBackend::Native => {
+            #[cfg(feature = "native-ipc")]
+            {
+                Ok(Box::new(NativeIpc::new()))
+            }
+            #[cfg(not(feature = "native-ipc"))]
+            {
+                Err(CliError::NativeIpcUnavailable)
+            }
+        }
+    }
+}
+
 pub fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
-    let runner = SystemHyprctlRunner::new("hyprctl");
-    let hyprctl = Hyprctl::new(runner);
+    let hyprctl = build_ipc(cli.ipc)?;
+    let hyprctl = hyprctl.as_ref();
     let paths = env_paths()?;
     let bin_path = bin_path();
 
     match cli.command {
         Command::Paired { command } => {
-            ensure_setup(&hyprctl, &paths, &bin_path)?;
+            ensure_setup(hyprctl, &paths, &bin_path)?;
             let config = load_config(&paths)?;
             match command {
                 PairedCommand::Switch { workspace } => {
-                    commands::paired_switch(&hyprctl, &config, workspace)?;
+                    commands::paired_switch(hyprctl, &config, workspace)?;
                 }
                 PairedCommand::Cycle { direction } => {
-                    commands::paired_cycle(&hyprctl, &config, direction.into())?;
+                    commands::paired_cycle(hyprctl, &config, direction.into())?;
                 }
                 PairedCommand::MoveWindow { workspace } => {
-                    commands::paired_move_window(&hyprctl, &config, workspace)?;
+                    commands::paired_move_window(hyprctl, &config, workspace)?;
                 }
             }
         }
         Command::Daemon => {
-            ensure_setup(&hyprctl, &paths, &bin_path)?;
+            ensure_setup(hyprctl, &paths, &bin_path)?;
             let config = load_config(&paths)?;
             let socket_path = socket2_path()?;
             ensure_socket(&socket_path)?;
-            daemon::rebalance_all(&hyprctl, &config)?;
+            daemon::rebalance_all(hyprctl, &config)?;
             let stream = std::os::unix::net::UnixStream::connect(&socket_path)?;
             stream.set_read_timeout(Some(daemon::DEFAULT_REBALANCE_DEBOUNCE))?;
             let mut reader = io::BufReader::new(stream);
@@ -334,7 +365,7 @@ pub fn run() -> Result<(), CliError> {
                             continue;
                         }
                         let _ = daemon::rebalance_for_event_debounced(
-                            &hyprctl,
+                            hyprctl,
                             &config,
                             trimmed,
                             &mut debounce,
@@ -344,8 +375,11 @@ pub fn run() -> Result<(), CliError> {
                         if err.kind() == io::ErrorKind::TimedOut
                             || err.kind() == io::ErrorKind::WouldBlock =>
                     {
-                        let _ =
-                            daemon::flush_pending_rebalance(&hyprctl, &config, &mut debounce)?;
+                        let _ = daemon::flush_pending_rebalance(
+                            hyprctl,
+                            &config,
+                            &mut debounce,
+                        )?;
                     }
                     Err(err) => return Err(err.into()),
                 }
@@ -353,11 +387,11 @@ pub fn run() -> Result<(), CliError> {
         }
         Command::Setup { command } => match command {
             SetupCommand::Install(args) => {
-                handle_setup_install(&hyprctl, &paths, &bin_path, args.waybar)?;
+                handle_setup_install(hyprctl, &paths, &bin_path, args.waybar)?;
             }
             SetupCommand::Uninstall => {
                 if let Ok(config) = load_config(&paths) {
-                    let _ = commands::migrate_windows(&hyprctl, &config);
+                    let _ = commands::migrate_windows(hyprctl, &config);
                 }
                 stop_daemon(&paths.base_dir)?;
                 setup::uninstall(&paths.base_dir, &paths.hypr_config_dir)?;
@@ -365,19 +399,19 @@ pub fn run() -> Result<(), CliError> {
             }
             SetupCommand::MigrateWindows => {
                 let config = load_config(&paths)?;
-                commands::migrate_windows(&hyprctl, &config)?;
+                commands::migrate_windows(hyprctl, &config)?;
             }
         },
         Command::Waybar(args) => {
             args.ensure_enabled()?;
-            ensure_setup(&hyprctl, &paths, &bin_path)?;
+            ensure_setup(hyprctl, &paths, &bin_path)?;
             let config = load_config(&paths)?;
             let theme_path = args.theme_css.unwrap_or(paths.waybar_css);
             let colors = waybar::load_theme_colors(&theme_path)?;
             let socket_path = socket2_path()?;
             ensure_socket(&socket_path)?;
             write_stdout(&waybar::state_from_hyprctl(
-                &hyprctl,
+                hyprctl,
                 config.paired_offset,
                 &colors,
             )?)?;
@@ -387,7 +421,7 @@ pub fn run() -> Result<(), CliError> {
                 let line = line?;
                 if waybar::should_update(&line) {
                     let state =
-                        waybar::state_from_hyprctl(&hyprctl, config.paired_offset, &colors)?;
+                        waybar::state_from_hyprctl(hyprctl, config.paired_offset, &colors)?;
                     write_stdout(&state)?;
                 }
             }
@@ -401,8 +435,8 @@ fn load_config(paths: &EnvPaths) -> Result<Config, CliError> {
     Ok(Config::from_path(&paths.config_path)?)
 }
 
-fn handle_setup_install<R: crate::hyprctl::HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn handle_setup_install(
+    hyprctl: &dyn HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
     waybar: bool,
@@ -411,8 +445,8 @@ fn handle_setup_install<R: crate::hyprctl::HyprctlRunner>(
     handle_setup_install_with_launcher(hyprctl, paths, bin_path, waybar, &launcher)
 }
 
-fn handle_setup_install_with_launcher<R: crate::hyprctl::HyprctlRunner, L: DaemonLauncher>(
-    hyprctl: &Hyprctl<R>,
+fn handle_setup_install_with_launcher<L: DaemonLauncher>(
+    hyprctl: &dyn HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
     waybar: bool,
@@ -434,8 +468,8 @@ fn handle_setup_install_with_launcher<R: crate::hyprctl::HyprctlRunner, L: Daemo
     Ok(())
 }
 
-fn ensure_setup<R: crate::hyprctl::HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+fn ensure_setup(
+    hyprctl: &dyn HyprlandIpc,
     paths: &EnvPaths,
     bin_path: &str,
 ) -> Result<(), CliError> {
@@ -743,5 +777,65 @@ mod tests {
         ];
 
         assert!(!super::cmdline_is_daemon(&args));
+    }
+
+
+    #[test]
+    fn ipc_defaults_to_hyprctl() {
+        let cli = Cli::try_parse_from(["hyprspaces", "paired", "switch", "1"]).expect("parse");
+
+        assert!(matches!(cli.ipc, super::IpcBackend::Hyprctl));
+    }
+
+    #[test]
+    fn ipc_parses_explicit_hyprctl() {
+        let cli = Cli::try_parse_from([
+            "hyprspaces",
+            "--ipc",
+            "hyprctl",
+            "paired",
+            "switch",
+            "1",
+        ])
+        .expect("parse");
+
+        assert!(matches!(cli.ipc, super::IpcBackend::Hyprctl));
+    }
+
+    #[cfg(not(feature = "native-ipc"))]
+    #[test]
+    fn ipc_native_requires_feature() {
+        let cli = Cli::try_parse_from([
+            "hyprspaces",
+            "--ipc",
+            "native",
+            "paired",
+            "switch",
+            "1",
+        ])
+        .expect("parse");
+
+        let err = match super::build_ipc(cli.ipc) {
+            Ok(_) => panic!("expected native ipc error"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, CliError::NativeIpcUnavailable));
+    }
+
+    #[cfg(feature = "native-ipc")]
+    #[test]
+    fn ipc_native_available_with_feature() {
+        let cli = Cli::try_parse_from([
+            "hyprspaces",
+            "--ipc",
+            "native",
+            "paired",
+            "switch",
+            "1",
+        ])
+        .expect("parse");
+
+        let _ = super::build_ipc(cli.ipc).expect("native ipc");
     }
 }

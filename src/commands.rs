@@ -1,10 +1,10 @@
 use crate::config::Config;
-use crate::hyprctl::{Hyprctl, HyprctlRunner, paired_switch_batch};
+use crate::hyprctl::{HyprlandIpc, paired_switch_batch};
 use crate::paired::{CycleDirection, cycle_target, normalize_workspace};
 use crate::setup::migration_targets;
 
-pub fn paired_switch<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn paired_switch(
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     workspace: u32,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -18,8 +18,8 @@ pub fn paired_switch<R: HyprctlRunner>(
     Ok(())
 }
 
-pub fn paired_cycle<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn paired_cycle(
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     direction: CycleDirection,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -29,8 +29,8 @@ pub fn paired_cycle<R: HyprctlRunner>(
     paired_switch(hyprctl, config, target)
 }
 
-pub fn paired_move_window<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn paired_move_window(
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
     workspace: u32,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
@@ -44,8 +44,8 @@ pub fn paired_move_window<R: HyprctlRunner>(
     paired_switch(hyprctl, config, normalized)
 }
 
-pub fn migrate_windows<R: HyprctlRunner>(
-    hyprctl: &Hyprctl<R>,
+pub fn migrate_windows(
+    hyprctl: &dyn HyprlandIpc,
     config: &Config,
 ) -> Result<usize, crate::hyprctl::HyprctlError> {
     let clients = hyprctl.clients()?;

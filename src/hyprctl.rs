@@ -2,6 +2,13 @@ use crate::paired::normalize_workspace;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::process::Command;
+#[cfg(feature = "native-ipc")]
+use hyprland::{
+    ctl,
+    data::{Clients, Monitors, Workspace, Workspaces},
+    dispatch::{Dispatch, DispatchType},
+    shared::{HyprData, HyprDataActive, HyprDataVec},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HyprctlError {
@@ -19,6 +26,8 @@ pub enum HyprctlError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("native ipc error: {0}")]
+    Native(String),
 }
 
 pub trait HyprctlRunner {
@@ -27,6 +36,131 @@ pub trait HyprctlRunner {
 
 pub struct Hyprctl<R> {
     runner: R,
+}
+
+
+pub trait HyprlandIpc {
+    fn batch(&self, batch: &str) -> Result<String, HyprctlError>;
+    fn active_workspace_id(&self) -> Result<u32, HyprctlError>;
+    fn dispatch(&self, dispatcher: &str, argument: &str) -> Result<String, HyprctlError>;
+    fn reload(&self) -> Result<String, HyprctlError>;
+    fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError>;
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError>;
+    fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError>;
+}
+
+#[cfg(feature = "native-ipc")]
+pub struct NativeIpc;
+
+#[cfg(feature = "native-ipc")]
+impl NativeIpc {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn map_error(error: hyprland::error::HyprError) -> HyprctlError {
+        HyprctlError::Native(error.to_string())
+    }
+
+    fn monitor_id(id: hyprland::shared::MonitorId) -> Result<i32, HyprctlError> {
+        i32::try_from(id)
+            .map_err(|_| HyprctlError::Native(format!("monitor id out of range: {id}")))
+    }
+
+    fn workspace_id(id: hyprland::shared::WorkspaceId) -> Result<u32, HyprctlError> {
+        u32::try_from(id)
+            .map_err(|_| HyprctlError::Native(format!("workspace id out of range: {id}")))
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+impl Default for NativeIpc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "native-ipc")]
+impl HyprlandIpc for NativeIpc {
+    fn batch(&self, batch: &str) -> Result<String, HyprctlError> {
+        for command in batch.split(';') {
+            let command = command.trim();
+            if command.is_empty() {
+                continue;
+            }
+            let mut parts = command.splitn(3, ' ');
+            let verb = parts.next().unwrap_or("");
+            if verb != "dispatch" {
+                return Err(HyprctlError::Native(format!(
+                    "unsupported batch command: {command}",
+                )));
+            }
+            let dispatcher = parts.next().ok_or_else(|| {
+                HyprctlError::Native(format!("missing dispatcher in batch: {command}"))
+            })?;
+            let argument = parts.next().unwrap_or("");
+            self.dispatch(dispatcher, argument)?;
+        }
+
+        Ok("ok".to_string())
+    }
+
+    fn active_workspace_id(&self) -> Result<u32, HyprctlError> {
+        let workspace = Workspace::get_active().map_err(Self::map_error)?;
+        Self::workspace_id(workspace.id)
+    }
+
+    fn dispatch(&self, dispatcher: &str, argument: &str) -> Result<String, HyprctlError> {
+        Dispatch::call(DispatchType::Custom(dispatcher, argument)).map_err(Self::map_error)?;
+        Ok("ok".to_string())
+    }
+
+    fn reload(&self) -> Result<String, HyprctlError> {
+        ctl::reload::call().map_err(Self::map_error)?;
+        Ok("ok".to_string())
+    }
+
+    fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError> {
+        let monitors = Monitors::get().map_err(Self::map_error)?.to_vec();
+        monitors
+            .into_iter()
+            .map(|monitor| {
+                Ok(MonitorInfo {
+                    name: monitor.name,
+                    x: monitor.x,
+                    id: Self::monitor_id(monitor.id)?,
+                })
+            })
+            .collect()
+    }
+
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError> {
+        let workspaces = Workspaces::get().map_err(Self::map_error)?.to_vec();
+        workspaces
+            .into_iter()
+            .map(|workspace| {
+                Ok(WorkspaceInfo {
+                    id: Self::workspace_id(workspace.id)?,
+                    windows: u32::from(workspace.windows),
+                })
+            })
+            .collect()
+    }
+
+    fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError> {
+        let clients = Clients::get().map_err(Self::map_error)?.to_vec();
+        clients
+            .into_iter()
+            .map(|client| {
+                Ok(ClientInfo {
+                    address: client.address.to_string(),
+                    workspace: WorkspaceRef {
+                        id: Self::workspace_id(client.workspace.id)?,
+                    },
+                })
+            })
+            .collect()
+    }
 }
 
 impl<R> Hyprctl<R> {
@@ -81,6 +215,36 @@ impl<R: HyprctlRunner> Hyprctl<R> {
         let output = self.runner.run(&args)?;
         let clients: Vec<ClientInfo> = parse_json("clients", &output)?;
         Ok(clients)
+    }
+}
+
+impl<R: HyprctlRunner> HyprlandIpc for Hyprctl<R> {
+    fn batch(&self, batch: &str) -> Result<String, HyprctlError> {
+        Hyprctl::batch(self, batch)
+    }
+
+    fn active_workspace_id(&self) -> Result<u32, HyprctlError> {
+        Hyprctl::active_workspace_id(self)
+    }
+
+    fn dispatch(&self, dispatcher: &str, argument: &str) -> Result<String, HyprctlError> {
+        Hyprctl::dispatch(self, dispatcher, argument)
+    }
+
+    fn reload(&self) -> Result<String, HyprctlError> {
+        Hyprctl::reload(self)
+    }
+
+    fn monitors(&self) -> Result<Vec<MonitorInfo>, HyprctlError> {
+        Hyprctl::monitors(self)
+    }
+
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>, HyprctlError> {
+        Hyprctl::workspaces(self)
+    }
+
+    fn clients(&self) -> Result<Vec<ClientInfo>, HyprctlError> {
+        Hyprctl::clients(self)
     }
 }
 
