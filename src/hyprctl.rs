@@ -387,6 +387,32 @@ pub fn paired_switch_batch(primary: &str, secondary: &str, workspace: u32, offse
     batch.to_argument()
 }
 
+pub fn paired_switch_batch_with_focus(
+    primary: &str,
+    secondary: &str,
+    workspace: u32,
+    offset: u32,
+    focus_monitor: &str,
+) -> String {
+    let normalized = normalize_workspace(workspace, offset);
+    let secondary_workspace = normalized + offset;
+    let mut batch = HyprctlBatch::new();
+
+    if focus_monitor == secondary {
+        batch.dispatch("focusmonitor", primary);
+        batch.dispatch("workspace", &normalized.to_string());
+        batch.dispatch("focusmonitor", secondary);
+        batch.dispatch("workspace", &secondary_workspace.to_string());
+    } else {
+        batch.dispatch("focusmonitor", secondary);
+        batch.dispatch("workspace", &secondary_workspace.to_string());
+        batch.dispatch("focusmonitor", primary);
+        batch.dispatch("workspace", &normalized.to_string());
+    }
+
+    batch.to_argument()
+}
+
 pub fn rebalance_batch(primary: &str, secondary: &str, offset: u32) -> String {
     let mut batch = HyprctlBatch::new();
 

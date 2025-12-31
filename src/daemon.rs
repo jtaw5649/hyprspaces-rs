@@ -23,11 +23,11 @@ pub enum MonitorEventKind {
     Removed,
 }
 
-#[derive(Debug, Clone)]
 pub struct FocusEvent {
     pub at: Instant,
     pub workspace_id: Option<u32>,
     pub window_address: Option<String>,
+    pub monitor_name: Option<String>,
 }
 
 pub enum DaemonEvent {
@@ -127,6 +127,7 @@ impl NativeEventSource {
                         at: Instant::now(),
                         workspace_id: Some(workspace_id),
                         window_address: None,
+                        monitor_name: None,
                     }));
                 }
             });
@@ -140,6 +141,7 @@ impl NativeEventSource {
                     at: Instant::now(),
                     workspace_id: None,
                     window_address: address,
+                    monitor_name: None,
                 }));
             });
             let monitor_sender = sender.clone();
@@ -153,6 +155,7 @@ impl NativeEventSource {
                         at: Instant::now(),
                         workspace_id: Some(workspace_id),
                         window_address: None,
+                        monitor_name: Some(monitor.monitor_name),
                     }));
                 }
             });
@@ -274,6 +277,12 @@ fn parse_workspace_id_from_name(name: &str) -> Option<u32> {
     name.parse().ok()
 }
 
+fn parse_monitor_name(payload: &str) -> Option<String> {
+    payload
+        .split_once(',')
+        .map(|(monitor, _)| monitor.to_string())
+}
+
 fn parse_first_field(payload: &str) -> Option<u32> {
     payload
         .split_once(',')
@@ -302,6 +311,7 @@ fn parse_socket2_event(line: &str, at: Instant) -> Option<DaemonEvent> {
                 at,
                 workspace_id: Some(workspace_id),
                 window_address: None,
+                monitor_name: None,
             })
         }),
         "workspace" => parse_workspace_id_from_name(payload).map(|workspace_id| {
@@ -309,22 +319,20 @@ fn parse_socket2_event(line: &str, at: Instant) -> Option<DaemonEvent> {
                 at,
                 workspace_id: Some(workspace_id),
                 window_address: None,
+                monitor_name: None,
             })
         }),
-        "focusedmonv2" => parse_second_field(payload).map(|workspace_id| {
-            DaemonEvent::Focus(FocusEvent {
-                at,
-                workspace_id: Some(workspace_id),
-                window_address: None,
+        "focusedmonv2" | "focusedmon" => {
+            let monitor_name = parse_monitor_name(payload);
+            parse_second_field(payload).map(|workspace_id| {
+                DaemonEvent::Focus(FocusEvent {
+                    at,
+                    workspace_id: Some(workspace_id),
+                    window_address: None,
+                    monitor_name,
+                })
             })
-        }),
-        "focusedmon" => parse_second_field(payload).map(|workspace_id| {
-            DaemonEvent::Focus(FocusEvent {
-                at,
-                workspace_id: Some(workspace_id),
-                window_address: None,
-            })
-        }),
+        }
         "activewindowv2" => {
             let address = payload.trim();
             if address.is_empty() {
@@ -334,11 +342,23 @@ fn parse_socket2_event(line: &str, at: Instant) -> Option<DaemonEvent> {
                     at,
                     workspace_id: None,
                     window_address: Some(address.to_string()),
+                    monitor_name: None,
                 }))
             }
         }
         _ => None,
     }
+}
+
+fn monitor_name_for_workspace(
+    hyprctl: &dyn HyprlandIpc,
+    workspace_id: u32,
+) -> Result<Option<String>, HyprctlError> {
+    let workspaces = hyprctl.workspaces()?;
+    Ok(workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .and_then(|workspace| workspace.monitor.clone()))
 }
 
 #[cfg(feature = "native-ipc")]
@@ -461,11 +481,19 @@ fn focus_switch_for_focus_event_at(
     if !debounce.should_switch(focus.at, base_workspace) {
         return Ok(false);
     }
-    let batch = crate::hyprctl::paired_switch_batch(
+    let mut focus_monitor = focus.monitor_name.clone();
+    if focus_monitor.is_none() {
+        focus_monitor = monitor_name_for_workspace(hyprctl, workspace_id)?;
+    }
+    let focus_monitor = focus_monitor
+        .as_deref()
+        .unwrap_or(&config.primary_monitor);
+    let batch = crate::hyprctl::paired_switch_batch_with_focus(
         &config.primary_monitor,
         &config.secondary_monitor,
         workspace_id,
         config.paired_offset,
+        focus_monitor,
     );
     hyprctl.batch(&batch)?;
     Ok(true)
@@ -636,9 +664,43 @@ mod tests {
     }
 
     #[test]
+    fn keeps_focus_on_secondary_monitor_for_focusedmon_event() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>HDMI-A-1,4",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 2 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn switches_pair_on_activewindowv2_event() {
-        let runner = RecordingRunner::with_clients(
+        let runner = RecordingRunner::with_clients_and_workspaces(
             r#"[{"address":"0x123","workspace":{"id":4}}]"#,
+            r#"[{"id":4,"windows":1,"monitor":"DP-1"}]"#,
         );
         let hyprctl = Hyprctl::new(runner.clone());
         let config = Config {
@@ -660,12 +722,48 @@ mod tests {
         .expect("switch"));
 
         let calls = runner.calls.borrow();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3);
         assert_eq!(
-            calls[1],
+            calls[2],
             vec![
                 "--batch".to_string(),
                 paired_switch_batch("DP-1", "HDMI-A-1", 4, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_focus_on_secondary_monitor_for_activewindowv2_event() {
+        let runner = RecordingRunner::with_clients_and_workspaces(
+            r#"[{"address":"0x123","workspace":{"id":4}}]"#,
+            r#"[{"id":4,"windows":1,"monitor":"HDMI-A-1"}]"#,
+        );
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "activewindowv2>>0x123",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[2],
+            vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 2 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 4".to_string(),
             ]
         );
     }
@@ -765,6 +863,7 @@ mod tests {
     struct RecordingRunner {
         calls: Rc<RefCell<Vec<Vec<String>>>>,
         clients_json: Option<String>,
+        workspaces_json: Option<String>,
     }
 
     impl HyprctlRunner for RecordingRunner {
@@ -776,15 +875,22 @@ mod tests {
                     None => Ok("ok".to_string()),
                 };
             }
+            if args == ["-j".to_string(), "workspaces".to_string()] {
+                return match self.workspaces_json.as_ref() {
+                    Some(payload) => Ok(payload.clone()),
+                    None => Ok("ok".to_string()),
+                };
+            }
             Ok("ok".to_string())
         }
     }
 
     impl RecordingRunner {
-        fn with_clients(clients_json: &str) -> Self {
+        fn with_clients_and_workspaces(clients_json: &str, workspaces_json: &str) -> Self {
             Self {
                 calls: Rc::new(RefCell::new(Vec::new())),
                 clients_json: Some(clients_json.to_string()),
+                workspaces_json: Some(workspaces_json.to_string()),
             }
         }
     }
