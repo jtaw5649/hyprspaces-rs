@@ -1,6 +1,6 @@
 # Maintainer: jtaw <213313463+jtaw5649 at users dot noreply dot github dot com>
 pkgname=hyprspaces
-pkgver=1.1.0
+pkgver=1.1.1
 pkgrel=1
 pkgdesc="Paired dual-monitor workspace management for Hyprland"
 arch=('x86_64')
