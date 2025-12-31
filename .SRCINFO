@@ -1,6 +1,6 @@
 pkgbase = hyprspaces
 	pkgdesc = Paired dual-monitor workspace management for Hyprland
-	pkgver = 1.1.0
+	pkgver = 1.1.1
 	pkgrel = 1
 	url = https://github.com/jtaw5649/hyprspaces-rs
 	install = hyprspaces.install
@@ -9,7 +9,7 @@ pkgbase = hyprspaces
 	makedepends = cargo
 	depends = hyprland
 	optdepends = waybar: optional Waybar custom module output
-	source = hyprspaces-1.1.0.tar.gz::https://github.com/jtaw5649/hyprspaces-rs/archive/v1.1.0.tar.gz
+	source = hyprspaces-1.1.1.tar.gz::https://github.com/jtaw5649/hyprspaces-rs/archive/v1.1.1.tar.gz
 	sha256sums = SKIP
 
 pkgname = hyprspaces
