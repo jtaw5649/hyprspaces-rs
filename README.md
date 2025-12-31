@@ -38,6 +38,7 @@ All commands accept `--ipc <hyprctl|native>`. `hyprctl` is the default; `native`
 - `hyprspaces paired switch <N>`: Switch both monitors to paired workspace N.
 - `hyprspaces paired cycle next|prev`: Cycle to the next/previous paired workspace.
 - `hyprspaces paired move-window <N>`: Move the focused window to paired workspace N.
+- `hyprspaces paired grab-rogue`: Move windows from the secondary range back to their paired primary workspaces.
 - `hyprspaces daemon`: Rebalance paired workspaces on monitor add/remove events.
 - `hyprspaces setup install|uninstall|migrate-windows`: Manage generated Hyprland fragments.
 - `hyprspaces waybar --enable-waybar [--theme-css <path>]`: Emit Waybar JSON output and update on socket2 events.

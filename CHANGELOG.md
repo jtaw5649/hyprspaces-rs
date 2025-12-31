@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `completions` subcommand for generating bash/zsh/fish scripts.
 - `status` subcommand for daemon/config/pairing visibility.
 - `workspace_count` config option (preferred) with setup-generated bindings/rules based on the configured count.
+- `paired grab-rogue` command to return windows from the secondary range to their paired primary workspaces.
 
 ### Changed
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.
