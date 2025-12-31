@@ -1,21 +1,59 @@
 use crate::config::Config;
-use crate::hyprctl::{HyprlandIpc, paired_switch_batch};
+use crate::hyprctl::{HyprlandIpc, paired_switch_batch_with_focus};
 use crate::paired::{CycleDirection, cycle_target, normalize_workspace};
 use crate::setup::migration_targets;
+
+fn focus_monitor_for_active_workspace<'a>(
+    hyprctl: &dyn HyprlandIpc,
+    config: &'a Config,
+    active_workspace: u32,
+) -> &'a str {
+    if let Ok(workspaces) = hyprctl.workspaces()
+        && let Some(monitor) = workspaces
+            .iter()
+            .find(|workspace| workspace.id == active_workspace)
+            .and_then(|workspace| workspace.monitor.as_deref())
+    {
+        if monitor == config.secondary_monitor {
+            return &config.secondary_monitor;
+        }
+        if monitor == config.primary_monitor {
+            return &config.primary_monitor;
+        }
+    }
+
+    if active_workspace > config.paired_offset {
+        &config.secondary_monitor
+    } else {
+        &config.primary_monitor
+    }
+}
+
+fn paired_switch_with_focus(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    workspace: u32,
+    focus_monitor: &str,
+) -> Result<(), crate::hyprctl::HyprctlError> {
+    let batch = paired_switch_batch_with_focus(
+        &config.primary_monitor,
+        &config.secondary_monitor,
+        workspace,
+        config.paired_offset,
+        focus_monitor,
+    );
+    hyprctl.batch(&batch)?;
+    Ok(())
+}
 
 pub fn paired_switch(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
     workspace: u32,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
-    let batch = paired_switch_batch(
-        &config.primary_monitor,
-        &config.secondary_monitor,
-        workspace,
-        config.paired_offset,
-    );
-    hyprctl.batch(&batch)?;
-    Ok(())
+    let active_workspace = hyprctl.active_workspace_id()?;
+    let focus_monitor = focus_monitor_for_active_workspace(hyprctl, config, active_workspace);
+    paired_switch_with_focus(hyprctl, config, workspace, focus_monitor)
 }
 
 pub fn paired_cycle(
@@ -24,9 +62,10 @@ pub fn paired_cycle(
     direction: CycleDirection,
 ) -> Result<(), crate::hyprctl::HyprctlError> {
     let active_workspace = hyprctl.active_workspace_id()?;
+    let focus_monitor = focus_monitor_for_active_workspace(hyprctl, config, active_workspace);
     let base = normalize_workspace(active_workspace, config.paired_offset);
     let target = cycle_target(base, config.paired_offset, direction, config.wrap_cycling);
-    paired_switch(hyprctl, config, target)
+    paired_switch_with_focus(hyprctl, config, target, focus_monitor)
 }
 
 pub fn paired_move_window(
@@ -36,12 +75,13 @@ pub fn paired_move_window(
 ) -> Result<(), crate::hyprctl::HyprctlError> {
     let normalized = normalize_workspace(workspace, config.paired_offset);
     let active_workspace = hyprctl.active_workspace_id()?;
+    let focus_monitor = focus_monitor_for_active_workspace(hyprctl, config, active_workspace);
     let mut target = normalized;
     if active_workspace > config.paired_offset {
         target += config.paired_offset;
     }
     hyprctl.dispatch("movetoworkspacesilent", &target.to_string())?;
-    paired_switch(hyprctl, config, normalized)
+    paired_switch_with_focus(hyprctl, config, normalized, focus_monitor)
 }
 
 pub fn migrate_windows(
@@ -87,6 +127,7 @@ mod tests {
     struct ScriptedRunner {
         active_id: u32,
         clients_json: String,
+        workspaces_json: String,
         calls: Rc<RefCell<Vec<Vec<String>>>>,
     }
 
@@ -95,6 +136,16 @@ mod tests {
             Self {
                 active_id,
                 clients_json: clients_json.to_string(),
+                workspaces_json: "[]".to_string(),
+                calls: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn with_workspaces(active_id: u32, clients_json: &str, workspaces_json: &str) -> Self {
+            Self {
+                active_id,
+                clients_json: clients_json.to_string(),
+                workspaces_json: workspaces_json.to_string(),
                 calls: Rc::new(RefCell::new(Vec::new())),
             }
         }
@@ -108,6 +159,9 @@ mod tests {
             }
             if args == ["-j".to_string(), "clients".to_string()] {
                 return Ok(self.clients_json.clone());
+            }
+            if args == ["-j".to_string(), "workspaces".to_string()] {
+                return Ok(self.workspaces_json.clone());
             }
             Ok("ok".to_string())
         }
@@ -134,7 +188,7 @@ mod tests {
         assert!(calls.iter().any(|call| {
             call == &vec![
                 "--batch".to_string(),
-                "dispatch focusmonitor HDMI-A-1 ; dispatch workspace 13 ; dispatch focusmonitor DP-1 ; dispatch workspace 3".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 3 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 13".to_string(),
             ]
         }));
     }
@@ -152,6 +206,39 @@ mod tests {
                 "dispatch".to_string(),
                 "movetoworkspacesilent".to_string(),
                 "12".to_string(),
+            ]
+        }));
+    }
+
+    #[test]
+    fn move_window_keeps_focus_on_secondary_monitor() {
+        let runner = ScriptedRunner::new(12, "[]");
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        paired_move_window(&hyprctl, &config(), 2).expect("move");
+
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 2 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 12".to_string(),
+            ]
+        }));
+    }
+
+    #[test]
+    fn move_window_respects_workspace_monitor_mapping() {
+        let workspaces_json = r#"[{"id":12,"windows":1,"monitor":"DP-1"}]"#;
+        let runner = ScriptedRunner::with_workspaces(12, "[]", workspaces_json);
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        paired_move_window(&hyprctl, &config(), 2).expect("move");
+
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor HDMI-A-1 ; dispatch workspace 12 ; dispatch focusmonitor DP-1 ; dispatch workspace 2".to_string(),
             ]
         }));
     }
