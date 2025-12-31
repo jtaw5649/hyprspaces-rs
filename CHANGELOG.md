@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [1.1.0] - 2025-12-31
+
+### Added
 - `--ipc` flag with `hyprctl` default plus a `native-ipc` feature gate for the hyprland-rs backend.
 - Native IPC daemon event listening (hyprland-rs) when built with `--features native-ipc`.
 - `completions` subcommand for generating bash/zsh/fish scripts.
@@ -25,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Daemon now switches both monitors on focus events (focusedmon/workspace/activewindowv2) while preserving the originating monitor focus across socket2 and native IPC.
-
 ## [1.0.0] - 2025-12-30
 
 ### Added
