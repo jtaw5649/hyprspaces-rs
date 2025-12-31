@@ -106,16 +106,21 @@ jobs:
         run: |
           version=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
           mkdir -p ~/.ssh
-          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >> ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
           echo "$AUR_SSH_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o UserKnownHostsFile=~/.ssh/known_hosts"
-          git clone https://aur.archlinux.org/hyprspaces.git aur
+          cat > ~/.ssh/config << 'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+          git clone ssh://aur@aur.archlinux.org/hyprspaces.git aur
           cp PKGBUILD .SRCINFO hyprspaces.install aur/
           cd aur
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote add aur ssh://aur@aur.archlinux.org/hyprspaces.git
           git add PKGBUILD .SRCINFO hyprspaces.install
           git commit -m "sync from master ${version}" || exit 0
-          git push aur master
+          git push origin master
