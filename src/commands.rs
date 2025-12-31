@@ -25,7 +25,7 @@ pub fn paired_cycle(
 ) -> Result<(), crate::hyprctl::HyprctlError> {
     let active_workspace = hyprctl.active_workspace_id()?;
     let base = normalize_workspace(active_workspace, config.paired_offset);
-    let target = cycle_target(base, config.paired_offset, direction);
+    let target = cycle_target(base, config.paired_offset, direction, config.wrap_cycling);
     paired_switch(hyprctl, config, target)
 }
 
@@ -119,6 +119,7 @@ mod tests {
             secondary_monitor: "HDMI-A-1".to_string(),
             paired_offset: 10,
             workspace_count: 10,
+            wrap_cycling: true,
         }
     }
 
