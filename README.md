@@ -53,13 +53,16 @@ hyprspaces reads `~/.config/hyprspaces/paired.json`:
 {
   "primary_monitor": "DP-1",
   "secondary_monitor": "DP-2",
-  "workspace_count": 10
+  "workspace_count": 10,
+  "wrap_cycling": true
 }
 ```
 
 `workspace_count` defines how many workspaces are reserved per monitor and sets the pairing offset. Workspace 3 on the primary pairs with workspace 13 on the secondary when the count is 10.
 
 `paired_offset` is still accepted for legacy configs. If both keys are present, `workspace_count` takes precedence.
+
+`wrap_cycling` controls whether paired cycling wraps at the ends. When false, cycling stops at 1 and the configured count.
 
 ## Default Keybinds
 

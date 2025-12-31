@@ -3,6 +3,7 @@ use std::path::Path;
 
 pub const DEFAULT_PAIRED_OFFSET: u32 = 10;
 pub const DEFAULT_WORKSPACE_COUNT: u32 = DEFAULT_PAIRED_OFFSET;
+pub const DEFAULT_WRAP_CYCLING: bool = true;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
@@ -10,6 +11,7 @@ pub struct Config {
     pub secondary_monitor: String,
     pub paired_offset: u32,
     pub workspace_count: u32,
+    pub wrap_cycling: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -20,6 +22,8 @@ struct RawConfig {
     paired_offset: u32,
     #[serde(default)]
     workspace_count: Option<u32>,
+    #[serde(default = "default_wrap_cycling")]
+    wrap_cycling: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +54,7 @@ impl Config {
             secondary_monitor,
             paired_offset: workspace_count,
             workspace_count,
+            wrap_cycling: raw.wrap_cycling,
         })
     }
 
@@ -69,6 +74,10 @@ impl std::str::FromStr for Config {
 
 fn default_offset() -> u32 {
     DEFAULT_PAIRED_OFFSET
+}
+
+fn default_wrap_cycling() -> bool {
+    DEFAULT_WRAP_CYCLING
 }
 
 #[cfg(test)]
@@ -141,6 +150,25 @@ mod tests {
 
         assert_eq!(config.paired_offset, 8);
         assert_eq!(config.workspace_count, 8);
+    }
+
+    #[test]
+    fn defaults_wrap_cycling_when_missing() {
+        let input = r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1"}"#;
+
+        let config = Config::from_json(input).expect("config should parse");
+
+        assert!(config.wrap_cycling);
+    }
+
+    #[test]
+    fn parses_wrap_cycling_false() {
+        let input =
+            r#"{"primary_monitor":"DP-1","secondary_monitor":"HDMI-A-1","wrap_cycling":false}"#;
+
+        let config = Config::from_json(input).expect("config should parse");
+
+        assert!(!config.wrap_cycling);
     }
 
     #[test]

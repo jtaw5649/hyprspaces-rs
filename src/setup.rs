@@ -1,4 +1,4 @@
-use crate::config::DEFAULT_PAIRED_OFFSET;
+use crate::config::{DEFAULT_PAIRED_OFFSET, DEFAULT_WRAP_CYCLING};
 use crate::hyprctl::{ClientInfo, MonitorInfo};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,15 +18,16 @@ pub fn select_monitors(monitors: &[MonitorInfo]) -> Option<(String, String)> {
 }
 
 pub fn render_default_config() -> String {
-    render_config("", "", DEFAULT_PAIRED_OFFSET)
+    render_config("", "", DEFAULT_PAIRED_OFFSET, DEFAULT_WRAP_CYCLING)
 }
 
-pub fn render_config(primary: &str, secondary: &str, offset: u32) -> String {
+pub fn render_config(primary: &str, secondary: &str, offset: u32, wrap_cycling: bool) -> String {
     serde_json::json!({
         "primary_monitor": primary,
         "secondary_monitor": secondary,
         "paired_offset": offset,
         "workspace_count": offset,
+        "wrap_cycling": wrap_cycling,
     })
     .to_string()
 }
@@ -188,7 +189,7 @@ pub fn ensure_config(
         return Ok(false);
     }
     let config = match monitors.and_then(select_monitors) {
-        Some((primary, secondary)) => render_config(&primary, &secondary, 10),
+        Some((primary, secondary)) => render_config(&primary, &secondary, 10, DEFAULT_WRAP_CYCLING),
         None => render_default_config(),
     };
     if let Some(parent) = config_path.parent() {
@@ -403,17 +404,19 @@ mod tests {
         assert_eq!(value["secondary_monitor"], "");
         assert_eq!(value["paired_offset"], 10);
         assert_eq!(value["workspace_count"], 10);
+        assert_eq!(value["wrap_cycling"], true);
     }
 
     #[test]
     fn renders_config_with_monitors() {
         let value: Value =
-            serde_json::from_str(&render_config("DP-1", "HDMI-A-1", 12)).expect("json");
+            serde_json::from_str(&render_config("DP-1", "HDMI-A-1", 12, false)).expect("json");
 
         assert_eq!(value["primary_monitor"], "DP-1");
         assert_eq!(value["secondary_monitor"], "HDMI-A-1");
         assert_eq!(value["paired_offset"], 12);
         assert_eq!(value["workspace_count"], 12);
+        assert_eq!(value["wrap_cycling"], false);
     }
 
     #[test]
