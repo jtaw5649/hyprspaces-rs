@@ -471,11 +471,23 @@ mod tests {
         let clients = vec![
             ClientInfo {
                 address: "0x123".to_string(),
-                workspace: WorkspaceRef { id: 12 },
+                workspace: WorkspaceRef { id: 12, name: None },
+                class: None,
+                title: None,
+                initial_class: None,
+                initial_title: None,
+                app_id: None,
+                pid: None,
             },
             ClientInfo {
                 address: "0x456".to_string(),
-                workspace: WorkspaceRef { id: 1 },
+                workspace: WorkspaceRef { id: 1, name: None },
+                class: None,
+                title: None,
+                initial_class: None,
+                initial_title: None,
+                app_id: None,
+                pid: None,
             },
         ];
 

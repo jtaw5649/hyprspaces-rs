@@ -39,11 +39,27 @@ All commands accept `--ipc <hyprctl|native>`. `hyprctl` is the default; `native`
 - `hyprspaces paired cycle next|prev`: Cycle to the next/previous paired workspace.
 - `hyprspaces paired move-window <N>`: Move the focused window to paired workspace N.
 - `hyprspaces paired grab-rogue`: Move windows from the secondary range back to their paired primary workspaces.
+- `hyprspaces session save [--path <path>]`: Capture a session snapshot (best-effort).
+- `hyprspaces session restore [--path <path>] [--mode auto|same|cold]`: Restore window placement from a snapshot.
 - `hyprspaces daemon`: Rebalance paired workspaces on monitor add/remove events.
 - `hyprspaces setup install|uninstall|migrate-windows`: Manage generated Hyprland fragments.
 - `hyprspaces waybar --enable-waybar [--theme-css <path>]`: Emit Waybar JSON output and update on socket2 events.
 - `hyprspaces completions <bash|zsh|fish>`: Generate shell completion scripts.
 - `hyprspaces status`: Show daemon state, config path, and active workspace pairing.
+
+## Session Snapshots (Best-effort)
+
+`hyprspaces` can save the current workspace layout and attempt to restore it later.
+
+Default snapshot path: `~/.config/hyprspaces/sessions/latest.json`.
+
+Restore modes:
+
+- `auto`: Uses `same` when the snapshot signature matches the current Hyprland session; otherwise falls back to `cold`.
+- `same`: Moves windows by address (fast, accurate within the same Hyprland session).
+- `cold`: Matches windows by `app_id`, `class`, `initial_class`, and `title` (unique matches only).
+
+`cold` restore is placement-only. It does not launch missing apps and unmatched windows are moved to their paired primary slot when possible.
 
 ## Configuration
 
