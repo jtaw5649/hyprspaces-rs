@@ -142,6 +142,8 @@ impl HyprlandIpc for NativeIpc {
                 Ok(WorkspaceInfo {
                     id: Self::workspace_id(workspace.id)?,
                     windows: u32::from(workspace.windows),
+                    name: Some(workspace.name),
+                    monitor: Some(workspace.monitor),
                 })
             })
             .collect()
@@ -156,7 +158,14 @@ impl HyprlandIpc for NativeIpc {
                     address: client.address.to_string(),
                     workspace: WorkspaceRef {
                         id: Self::workspace_id(client.workspace.id)?,
+                        name: Some(client.workspace.name),
                     },
+                    class: Some(client.class),
+                    title: Some(client.title),
+                    initial_class: Some(client.initial_class),
+                    initial_title: Some(client.initial_title),
+                    app_id: None,
+                    pid: Some(client.pid),
                 })
             })
             .collect()
@@ -312,17 +321,35 @@ pub struct MonitorInfo {
 pub struct WorkspaceInfo {
     pub id: u32,
     pub windows: u32,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub monitor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ClientInfo {
     pub address: String,
     pub workspace: WorkspaceRef,
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default, rename = "initialClass", alias = "initialclass")]
+    pub initial_class: Option<String>,
+    #[serde(default, rename = "initialTitle", alias = "initialtitle")]
+    pub initial_title: Option<String>,
+    #[serde(default, rename = "appID", alias = "appId")]
+    pub app_id: Option<String>,
+    #[serde(default)]
+    pub pid: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceRef {
     pub id: u32,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

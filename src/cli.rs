@@ -17,6 +17,7 @@ use crate::hyprctl::{HyprlandIpc, Hyprctl, HyprctlError, SystemHyprctlRunner};
 use crate::hyprctl::NativeIpc;
 use crate::paired::{CycleDirection, normalize_workspace};
 use crate::paths;
+use crate::session;
 use crate::setup::{self, SetupError};
 use crate::waybar::{self, WaybarError};
 
@@ -155,6 +156,8 @@ pub enum CliError {
     Setup(#[from] SetupError),
     #[error("hyprctl error")]
     Hyprctl(#[from] HyprctlError),
+    #[error("session error")]
+    Session(#[from] session::SessionError),
     #[error("waybar error")]
     Waybar(#[from] WaybarError),
 }
@@ -448,7 +451,34 @@ pub fn run() -> Result<(), CliError> {
                 }
             }
         }
-        Command::Session { .. } => {}
+        Command::Session { command } => {
+            ensure_setup(hyprctl, &paths, &bin_path)?;
+            let config = load_config(&paths)?;
+            match command {
+                SessionCommand::Save { path } => {
+                    let _ = session::save_session(
+                        hyprctl,
+                        &config,
+                        &paths.base_dir,
+                        path.as_deref(),
+                    )?;
+                }
+                SessionCommand::Restore { path, mode } => {
+                    let restore_mode = match mode {
+                        SessionRestoreMode::Auto => session::RestoreMode::Auto,
+                        SessionRestoreMode::Same => session::RestoreMode::Same,
+                        SessionRestoreMode::Cold => session::RestoreMode::Cold,
+                    };
+                    session::restore_session(
+                        hyprctl,
+                        &config,
+                        &paths.base_dir,
+                        path.as_deref(),
+                        restore_mode,
+                    )?;
+                }
+            }
+        }
         Command::Setup { command } => match command {
             SetupCommand::Install(args) => {
                 handle_setup_install(hyprctl, &paths, &bin_path, args.waybar)?;

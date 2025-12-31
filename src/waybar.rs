@@ -176,9 +176,24 @@ mod tests {
     #[test]
     fn computes_occupied_workspaces() {
         let workspaces = vec![
-            WorkspaceInfo { id: 1, windows: 2 },
-            WorkspaceInfo { id: 12, windows: 1 },
-            WorkspaceInfo { id: 3, windows: 0 },
+            WorkspaceInfo {
+                id: 1,
+                windows: 2,
+                name: None,
+                monitor: None,
+            },
+            WorkspaceInfo {
+                id: 12,
+                windows: 1,
+                name: None,
+                monitor: None,
+            },
+            WorkspaceInfo {
+                id: 3,
+                windows: 0,
+                name: None,
+                monitor: None,
+            },
         ];
 
         assert_eq!(occupied_workspaces(&workspaces, 10), vec![1, 2]);
@@ -197,7 +212,12 @@ mod tests {
     #[test]
     fn renders_state_json() {
         let colors = ThemeColors::from_foreground("#ffffff").expect("colors");
-        let workspaces = vec![WorkspaceInfo { id: 1, windows: 1 }];
+        let workspaces = vec![WorkspaceInfo {
+            id: 1,
+            windows: 1,
+            name: None,
+            monitor: None,
+        }];
 
         let json = render_state(1, &workspaces, 10, &colors);
 

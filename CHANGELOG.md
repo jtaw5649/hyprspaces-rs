@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `workspace_count` config option (preferred) with setup-generated bindings/rules based on the configured count.
 - `paired grab-rogue` command to return windows from the secondary range to their paired primary workspaces.
 - `wrap_cycling` config option to disable wrap-around when cycling paired workspaces.
+- `session save` and `session restore` commands for best-effort workspace snapshotting.
 
 ### Changed
 - Hyprctl errors now carry command, status, and JSON context for easier debugging.

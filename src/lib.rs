@@ -5,5 +5,6 @@ pub mod daemon;
 pub mod hyprctl;
 pub mod paired;
 pub mod paths;
+pub mod session;
 pub mod setup;
 pub mod waybar;
