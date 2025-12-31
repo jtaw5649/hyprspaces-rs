@@ -15,6 +15,18 @@ fn parses_paired_switch() {
 }
 
 #[test]
+fn parses_paired_grab_rogue() {
+    let cli = Cli::try_parse_from(["hyprspaces", "paired", "grab-rogue"]).expect("parse");
+
+    match cli.command {
+        Command::Paired {
+            command: PairedCommand::GrabRogue,
+        } => {}
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
 fn parses_setup_migrate_windows() {
     let cli = Cli::try_parse_from(["hyprspaces", "setup", "migrate-windows"]).expect("parse");
 
