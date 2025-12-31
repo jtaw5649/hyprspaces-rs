@@ -7,13 +7,18 @@ on:
     inputs:
       bump_type:
         description: 'Version bump type'
-        required: true
+        required: false
         type: choice
         default: 'patch'
         options:
           - patch
           - minor
           - major
+      aur_only:
+        description: 'Only publish to AUR (skip version bump)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -38,7 +43,7 @@ jobs:
         run: cargo clippy --all-targets --all-features
 
   release:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.aur_only != true
     needs: verify
     runs-on: ubuntu-latest
     container: archlinux:latest
@@ -86,8 +91,8 @@ jobs:
   aur-publish:
     needs: verify
     if: |
-      github.event_name == 'push' &&
-      startsWith(github.event.head_commit.message, 'chore: bump version')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore: bump version'))
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
