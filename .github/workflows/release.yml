@@ -129,3 +129,4 @@ EOF
           git add PKGBUILD .SRCINFO hyprspaces.install
           git commit -m "sync from master ${version}" || exit 0
           git push origin master
+
