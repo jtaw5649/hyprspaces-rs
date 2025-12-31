@@ -110,11 +110,11 @@ jobs:
           echo "$AUR_SSH_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
           cat > ~/.ssh/config << 'EOF'
-          Host aur.archlinux.org
-            IdentityFile ~/.ssh/aur
-            User aur
-            StrictHostKeyChecking accept-new
-          EOF
+Host aur.archlinux.org
+  IdentityFile ~/.ssh/aur
+  User aur
+  StrictHostKeyChecking accept-new
+EOF
           chmod 600 ~/.ssh/config
           git clone ssh://aur@aur.archlinux.org/hyprspaces.git aur
           cp PKGBUILD .SRCINFO hyprspaces.install aur/
