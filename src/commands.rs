@@ -59,9 +59,24 @@ pub fn migrate_windows(
     Ok(targets.len())
 }
 
+pub fn grab_rogue_windows(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+) -> Result<usize, crate::hyprctl::HyprctlError> {
+    let clients = hyprctl.clients()?;
+    let targets = migration_targets(&clients, config.workspace_count);
+    for (address, target) in &targets {
+        hyprctl.dispatch(
+            "movetoworkspacesilent",
+            &format!("{target},address:{address}"),
+        )?;
+    }
+    Ok(targets.len())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{migrate_windows, paired_cycle, paired_move_window};
+    use super::{grab_rogue_windows, migrate_windows, paired_cycle, paired_move_window};
     use crate::config::Config;
     use crate::hyprctl::{Hyprctl, HyprctlRunner};
     use crate::paired::CycleDirection;
@@ -147,6 +162,25 @@ mod tests {
         let hyprctl = Hyprctl::new(runner.clone());
 
         let migrated = migrate_windows(&hyprctl, &config()).expect("migrate");
+
+        assert_eq!(migrated, 1);
+        let calls = runner.calls.borrow();
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "dispatch".to_string(),
+                "movetoworkspacesilent".to_string(),
+                "2,address:0x123".to_string(),
+            ]
+        }));
+    }
+
+    #[test]
+    fn grabs_rogue_windows_from_secondary_range() {
+        let clients_json = r#"[{"address":"0x123","workspace":{"id":12}},{"address":"0x456","workspace":{"id":1}}]"#;
+        let runner = ScriptedRunner::new(1, clients_json);
+        let hyprctl = Hyprctl::new(runner.clone());
+
+        let migrated = grab_rogue_windows(&hyprctl, &config()).expect("grab");
 
         assert_eq!(migrated, 1);
         let calls = runner.calls.borrow();

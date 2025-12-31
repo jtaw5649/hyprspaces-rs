@@ -71,6 +71,8 @@ pub enum PairedCommand {
     MoveWindow {
         workspace: u32,
     },
+    #[command(name = "grab-rogue")]
+    GrabRogue,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
@@ -392,6 +394,9 @@ pub fn run() -> Result<(), CliError> {
                 }
                 PairedCommand::MoveWindow { workspace } => {
                     commands::paired_move_window(hyprctl, &config, workspace)?;
+                }
+                PairedCommand::GrabRogue => {
+                    commands::grab_rogue_windows(hyprctl, &config)?;
                 }
             }
         }
