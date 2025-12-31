@@ -14,15 +14,25 @@ pub fn event_name(line: &str) -> &str {
     }
 }
 
-pub fn should_rebalance(line: &str) -> bool {
-    let name = event_name(line);
-    name.starts_with("monitoradded") || name.starts_with("monitorremoved")
+pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
+pub const DEFAULT_FOCUS_SWITCH_DEBOUNCE: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorEventKind {
+    Added,
+    Removed,
 }
 
-pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
+pub struct FocusEvent {
+    pub at: Instant,
+    pub workspace_id: Option<u32>,
+    pub window_address: Option<String>,
+    pub monitor_name: Option<String>,
+}
 
 pub enum DaemonEvent {
-    Line { line: String, at: Instant },
+    Focus(FocusEvent),
+    Monitor { kind: MonitorEventKind, at: Instant },
     Timeout { at: Instant },
     Disconnected,
 }
@@ -63,10 +73,10 @@ impl EventSource for Socket2EventSource {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    return Ok(DaemonEvent::Line {
-                        line: trimmed.to_string(),
-                        at: Instant::now(),
-                    });
+                    if let Some(event) = parse_socket2_event(trimmed, Instant::now()) {
+                        return Ok(event);
+                    }
+                    continue;
                 }
                 Err(err)
                     if err.kind() == io::ErrorKind::TimedOut
@@ -97,17 +107,57 @@ impl NativeEventSource {
             let mut listener = hyprland::event_listener::EventListener::new();
             let added_sender = sender.clone();
             listener.add_monitor_added_handler(move |_| {
-                let _ = added_sender.send(DaemonEvent::Line {
-                    line: "monitoradded".to_string(),
+                let _ = added_sender.send(DaemonEvent::Monitor {
+                    kind: MonitorEventKind::Added,
                     at: Instant::now(),
                 });
             });
             let removed_sender = sender.clone();
             listener.add_monitor_removed_handler(move |_| {
-                let _ = removed_sender.send(DaemonEvent::Line {
-                    line: "monitorremoved".to_string(),
+                let _ = removed_sender.send(DaemonEvent::Monitor {
+                    kind: MonitorEventKind::Removed,
                     at: Instant::now(),
                 });
+            });
+            let workspace_sender = sender.clone();
+            listener.add_workspace_changed_handler(move |workspace| {
+                let workspace_id = workspace_id_from_native(workspace.id);
+                if let Some(workspace_id) = workspace_id {
+                    let _ = workspace_sender.send(DaemonEvent::Focus(FocusEvent {
+                        at: Instant::now(),
+                        workspace_id: Some(workspace_id),
+                        window_address: None,
+                        monitor_name: None,
+                    }));
+                }
+            });
+            let window_sender = sender.clone();
+            listener.add_active_window_changed_handler(move |window| {
+                let address = window.map(|window| window.address.to_string());
+                if address.is_none() {
+                    return;
+                }
+                let _ = window_sender.send(DaemonEvent::Focus(FocusEvent {
+                    at: Instant::now(),
+                    workspace_id: None,
+                    window_address: address,
+                    monitor_name: None,
+                }));
+            });
+            let monitor_sender = sender.clone();
+            listener.add_active_monitor_changed_handler(move |monitor| {
+                let workspace_id = monitor
+                    .workspace_name
+                    .as_ref()
+                    .and_then(workspace_id_from_workspace_type);
+                if let Some(workspace_id) = workspace_id {
+                    let _ = monitor_sender.send(DaemonEvent::Focus(FocusEvent {
+                        at: Instant::now(),
+                        workspace_id: Some(workspace_id),
+                        window_address: None,
+                        monitor_name: Some(monitor.monitor_name),
+                    }));
+                }
             });
             let _ = listener.instance_start_listener(&instance);
             let _ = sender.send(DaemonEvent::Disconnected);
@@ -188,8 +238,152 @@ impl RebalanceDebounce {
     }
 }
 
+pub struct FocusSwitchDebounce {
+    min_interval: Duration,
+    last_switch: Option<Instant>,
+    last_workspace: Option<u32>,
+}
+
+impl FocusSwitchDebounce {
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            min_interval,
+            last_switch: None,
+            last_workspace: None,
+        }
+    }
+
+    fn should_switch(&mut self, now: Instant, workspace: u32) -> bool {
+        let recent_same_workspace = match (self.last_switch, self.last_workspace) {
+            (Some(last_switch), Some(last_workspace)) if last_workspace == workspace => {
+                now.duration_since(last_switch) < self.min_interval
+            }
+            _ => false,
+        };
+        if recent_same_workspace {
+            return false;
+        }
+        self.last_switch = Some(now);
+        self.last_workspace = Some(workspace);
+        true
+    }
+}
+
 pub fn socket2_path(runtime_dir: &str, instance_signature: &str) -> String {
     format!("{}/hypr/{}/.socket2.sock", runtime_dir, instance_signature)
+}
+
+fn parse_workspace_id_from_name(name: &str) -> Option<u32> {
+    name.parse().ok()
+}
+
+fn parse_monitor_name(payload: &str) -> Option<String> {
+    payload
+        .split_once(',')
+        .map(|(monitor, _)| monitor.to_string())
+}
+
+fn parse_first_field(payload: &str) -> Option<u32> {
+    payload
+        .split_once(',')
+        .and_then(|(first, _)| first.parse().ok())
+}
+
+fn parse_second_field(payload: &str) -> Option<u32> {
+    payload
+        .split_once(',')
+        .and_then(|(_, second)| second.parse().ok())
+}
+
+fn parse_socket2_event(line: &str, at: Instant) -> Option<DaemonEvent> {
+    let (name, payload) = line.split_once(">>")?;
+    match name {
+        "monitoradded" | "monitoraddedv2" => Some(DaemonEvent::Monitor {
+            kind: MonitorEventKind::Added,
+            at,
+        }),
+        "monitorremoved" | "monitorremovedv2" => Some(DaemonEvent::Monitor {
+            kind: MonitorEventKind::Removed,
+            at,
+        }),
+        "workspacev2" => parse_first_field(payload).map(|workspace_id| {
+            DaemonEvent::Focus(FocusEvent {
+                at,
+                workspace_id: Some(workspace_id),
+                window_address: None,
+                monitor_name: None,
+            })
+        }),
+        "workspace" => parse_workspace_id_from_name(payload).map(|workspace_id| {
+            DaemonEvent::Focus(FocusEvent {
+                at,
+                workspace_id: Some(workspace_id),
+                window_address: None,
+                monitor_name: None,
+            })
+        }),
+        "focusedmonv2" | "focusedmon" => {
+            let monitor_name = parse_monitor_name(payload);
+            parse_second_field(payload).map(|workspace_id| {
+                DaemonEvent::Focus(FocusEvent {
+                    at,
+                    workspace_id: Some(workspace_id),
+                    window_address: None,
+                    monitor_name,
+                })
+            })
+        }
+        "activewindowv2" => {
+            let address = payload.trim();
+            if address.is_empty() {
+                None
+            } else {
+                Some(DaemonEvent::Focus(FocusEvent {
+                    at,
+                    workspace_id: None,
+                    window_address: Some(address.to_string()),
+                    monitor_name: None,
+                }))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn monitor_name_for_workspace(
+    hyprctl: &dyn HyprlandIpc,
+    workspace_id: u32,
+) -> Result<Option<String>, HyprctlError> {
+    let workspaces = hyprctl.workspaces()?;
+    Ok(workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .and_then(|workspace| workspace.monitor.clone()))
+}
+
+#[cfg(feature = "native-ipc")]
+fn workspace_id_from_native(id: hyprland::shared::WorkspaceId) -> Option<u32> {
+    if id <= 0 {
+        return None;
+    }
+    u32::try_from(id).ok()
+}
+
+#[cfg(feature = "native-ipc")]
+fn workspace_id_from_workspace_type(
+    workspace: &hyprland::shared::WorkspaceType,
+) -> Option<u32> {
+    match workspace {
+        hyprland::shared::WorkspaceType::Regular(name) => parse_workspace_id_from_name(name),
+        hyprland::shared::WorkspaceType::Special(_) => None,
+    }
+}
+
+pub fn should_rebalance(line: &str) -> bool {
+    matches!(
+        parse_socket2_event(line, Instant::now()),
+        Some(DaemonEvent::Monitor { .. })
+    )
 }
 
 pub fn rebalance_batch_for_event(
@@ -198,10 +392,11 @@ pub fn rebalance_batch_for_event(
     offset: u32,
     line: &str,
 ) -> Option<String> {
-    if should_rebalance(line) {
-        Some(crate::hyprctl::rebalance_batch(primary, secondary, offset))
-    } else {
-        None
+    match parse_socket2_event(line, Instant::now()) {
+        Some(DaemonEvent::Monitor { .. }) => {
+            Some(crate::hyprctl::rebalance_batch(primary, secondary, offset))
+        }
+        _ => None,
     }
 }
 
@@ -222,17 +417,86 @@ pub fn rebalance_for_event(
     config: &Config,
     line: &str,
 ) -> Result<bool, HyprctlError> {
-    if let Some(batch) = rebalance_batch_for_event(
+    if !matches!(
+        parse_socket2_event(line, Instant::now()),
+        Some(DaemonEvent::Monitor { .. })
+    ) {
+        return Ok(false);
+    }
+    let batch = crate::hyprctl::rebalance_batch(
         &config.primary_monitor,
         &config.secondary_monitor,
         config.paired_offset,
-        line,
-    ) {
-        hyprctl.batch(&batch)?;
-        Ok(true)
+    );
+    hyprctl.batch(&batch)?;
+    Ok(true)
+}
+
+pub fn focus_switch_for_event(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    line: &str,
+    debounce: &mut FocusSwitchDebounce,
+) -> Result<bool, HyprctlError> {
+    focus_switch_for_event_at(hyprctl, config, line, debounce, Instant::now())
+}
+
+pub fn focus_switch_for_event_at(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    line: &str,
+    debounce: &mut FocusSwitchDebounce,
+    now: Instant,
+) -> Result<bool, HyprctlError> {
+    let focus = match parse_socket2_event(line, now) {
+        Some(DaemonEvent::Focus(focus)) => focus,
+        _ => return Ok(false),
+    };
+    focus_switch_for_focus_event_at(hyprctl, config, &focus, debounce)
+}
+
+fn focus_switch_for_focus_event_at(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    focus: &FocusEvent,
+    debounce: &mut FocusSwitchDebounce,
+) -> Result<bool, HyprctlError> {
+    let workspace_id = if let Some(workspace_id) = focus.workspace_id {
+        Some(workspace_id)
+    } else if let Some(address) = focus.window_address.as_deref() {
+        let clients = hyprctl.clients()?;
+        clients
+            .iter()
+            .find(|client| client.address == address)
+            .map(|client| client.workspace.id)
     } else {
-        Ok(false)
+        None
+    };
+    let workspace_id = match workspace_id {
+        Some(workspace_id) if workspace_id > 0 => workspace_id,
+        _ => return Ok(false),
+    };
+    let base_workspace =
+        crate::paired::normalize_workspace(workspace_id, config.paired_offset);
+    if !debounce.should_switch(focus.at, base_workspace) {
+        return Ok(false);
     }
+    let mut focus_monitor = focus.monitor_name.clone();
+    if focus_monitor.is_none() {
+        focus_monitor = monitor_name_for_workspace(hyprctl, workspace_id)?;
+    }
+    let focus_monitor = focus_monitor
+        .as_deref()
+        .unwrap_or(&config.primary_monitor);
+    let batch = crate::hyprctl::paired_switch_batch_with_focus(
+        &config.primary_monitor,
+        &config.secondary_monitor,
+        workspace_id,
+        config.paired_offset,
+        focus_monitor,
+    );
+    hyprctl.batch(&batch)?;
+    Ok(true)
 }
 
 pub fn rebalance_for_event_debounced(
@@ -241,7 +505,11 @@ pub fn rebalance_for_event_debounced(
     line: &str,
     debounce: &mut RebalanceDebounce,
 ) -> Result<bool, HyprctlError> {
-    rebalance_for_event_at(hyprctl, config, line, debounce, Instant::now())
+    let event = match parse_socket2_event(line, Instant::now()) {
+        Some(DaemonEvent::Monitor { kind, at }) => (kind, at),
+        _ => return Ok(false),
+    };
+    rebalance_for_event_at(hyprctl, config, event.0, debounce, event.1)
 }
 
 pub fn flush_pending_rebalance(
@@ -255,15 +523,27 @@ pub fn flush_pending_rebalance(
 pub fn process_event(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
-    debounce: &mut RebalanceDebounce,
+    rebalance_debounce: &mut RebalanceDebounce,
+    focus_debounce: &mut FocusSwitchDebounce,
     event: DaemonEvent,
 ) -> Result<bool, HyprctlError> {
     match event {
-        DaemonEvent::Line { line, at } => {
-            rebalance_for_event_at(hyprctl, config, &line, debounce, at)
+        DaemonEvent::Focus(focus) => {
+            let mut did_work = false;
+            if focus_switch_for_focus_event_at(hyprctl, config, &focus, focus_debounce)? {
+                did_work = true;
+            }
+            Ok(did_work)
+        }
+        DaemonEvent::Monitor { kind, at } => {
+            let mut did_work = false;
+            if rebalance_for_event_at(hyprctl, config, kind, rebalance_debounce, at)? {
+                did_work = true;
+            }
+            Ok(did_work)
         }
         DaemonEvent::Timeout { at } => {
-            flush_pending_rebalance_at(hyprctl, config, debounce, at)
+            flush_pending_rebalance_at(hyprctl, config, rebalance_debounce, at)
         }
         DaemonEvent::Disconnected => Ok(false),
     }
@@ -272,22 +552,22 @@ pub fn process_event(
 fn rebalance_for_event_at(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
-    line: &str,
+    kind: MonitorEventKind,
     debounce: &mut RebalanceDebounce,
     now: Instant,
 ) -> Result<bool, HyprctlError> {
-    if let Some(batch) = rebalance_batch_for_event(
-        &config.primary_monitor,
-        &config.secondary_monitor,
-        config.paired_offset,
-        line,
-    ) {
-        if debounce.record_event(now) {
-            hyprctl.batch(&batch)?;
-            Ok(true)
-        } else {
-            Ok(false)
+    let batch = match kind {
+        MonitorEventKind::Added | MonitorEventKind::Removed => {
+            crate::hyprctl::rebalance_batch(
+                &config.primary_monitor,
+                &config.secondary_monitor,
+                config.paired_offset,
+            )
         }
+    };
+    if debounce.record_event(now) {
+        hyprctl.batch(&batch)?;
+        Ok(true)
     } else {
         Ok(false)
     }
@@ -315,13 +595,13 @@ fn flush_pending_rebalance_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_name, flush_pending_rebalance_at, process_event, rebalance_all,
-        rebalance_batch_for_event, rebalance_for_event, rebalance_for_event_at,
-        should_rebalance, socket2_path, DaemonEvent, EventSource, RebalanceDebounce,
-        Socket2EventSource,
+        event_name, flush_pending_rebalance_at, focus_switch_for_event_at, process_event,
+        rebalance_all, rebalance_batch_for_event, rebalance_for_event, rebalance_for_event_at,
+        should_rebalance, socket2_path, DaemonEvent, EventSource, FocusSwitchDebounce,
+        MonitorEventKind, RebalanceDebounce, Socket2EventSource,
     };
     use crate::config::Config;
-    use crate::hyprctl::{Hyprctl, HyprctlRunner, rebalance_batch};
+    use crate::hyprctl::{Hyprctl, HyprctlRunner, paired_switch_batch, rebalance_batch};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::io::Write;
@@ -351,6 +631,214 @@ mod tests {
     }
 
     #[test]
+    fn switches_pair_on_focusedmonv2_event() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            vec![
+                "--batch".to_string(),
+                paired_switch_batch("DP-1", "HDMI-A-1", 3, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_focus_on_secondary_monitor_for_focusedmon_event() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>HDMI-A-1,4",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 2 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn switches_pair_on_activewindowv2_event() {
+        let runner = RecordingRunner::with_clients_and_workspaces(
+            r#"[{"address":"0x123","workspace":{"id":4}}]"#,
+            r#"[{"id":4,"windows":1,"monitor":"DP-1"}]"#,
+        );
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "activewindowv2>>0x123",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[2],
+            vec![
+                "--batch".to_string(),
+                paired_switch_batch("DP-1", "HDMI-A-1", 4, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_focus_on_secondary_monitor_for_activewindowv2_event() {
+        let runner = RecordingRunner::with_clients_and_workspaces(
+            r#"[{"address":"0x123","workspace":{"id":4}}]"#,
+            r#"[{"id":4,"windows":1,"monitor":"HDMI-A-1"}]"#,
+        );
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "activewindowv2>>0x123",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[2],
+            vec![
+                "--batch".to_string(),
+                "dispatch focusmonitor DP-1 ; dispatch workspace 2 ; dispatch focusmonitor HDMI-A-1 ; dispatch workspace 4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn debounces_repeated_focus_events() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+        let start = Instant::now();
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            start,
+        )
+        .expect("switch"));
+        assert!(!focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            start + Duration::from_millis(10),
+        )
+        .expect("debounced"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn debounces_paired_focus_events() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+        let start = Instant::now();
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            start,
+        )
+        .expect("switch"));
+        assert!(!focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,1",
+            &mut debounce,
+            start + Duration::from_millis(10),
+        )
+        .expect("debounced"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
     fn builds_socket2_path() {
         let path = socket2_path("/run/user/1000", "abc");
 
@@ -374,12 +862,36 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingRunner {
         calls: Rc<RefCell<Vec<Vec<String>>>>,
+        clients_json: Option<String>,
+        workspaces_json: Option<String>,
     }
 
     impl HyprctlRunner for RecordingRunner {
         fn run(&self, args: &[String]) -> Result<String, crate::hyprctl::HyprctlError> {
             self.calls.borrow_mut().push(args.to_vec());
+            if args == ["-j".to_string(), "clients".to_string()] {
+                return match self.clients_json.as_ref() {
+                    Some(payload) => Ok(payload.clone()),
+                    None => Ok("ok".to_string()),
+                };
+            }
+            if args == ["-j".to_string(), "workspaces".to_string()] {
+                return match self.workspaces_json.as_ref() {
+                    Some(payload) => Ok(payload.clone()),
+                    None => Ok("ok".to_string()),
+                };
+            }
             Ok("ok".to_string())
+        }
+    }
+
+    impl RecordingRunner {
+        fn with_clients_and_workspaces(clients_json: &str, workspaces_json: &str) -> Self {
+            Self {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                clients_json: Some(clients_json.to_string()),
+                workspaces_json: Some(workspaces_json.to_string()),
+            }
         }
     }
 
@@ -444,7 +956,7 @@ mod tests {
         assert!(rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitoradded>>DP-1",
+            MonitorEventKind::Added,
             &mut debounce,
             start,
         )
@@ -452,7 +964,7 @@ mod tests {
         assert!(!rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitorremovedv2>>1,DP-1,desc",
+            MonitorEventKind::Removed,
             &mut debounce,
             start + Duration::from_millis(50),
         )
@@ -479,7 +991,7 @@ mod tests {
         assert!(rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitoradded>>DP-1",
+            MonitorEventKind::Added,
             &mut debounce,
             start,
         )
@@ -487,7 +999,7 @@ mod tests {
         assert!(!rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitorremovedv2>>1,DP-1,desc",
+            MonitorEventKind::Removed,
             &mut debounce,
             start + Duration::from_millis(50),
         )
@@ -517,14 +1029,16 @@ mod tests {
             wrap_cycling: true,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let mut focus_debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
         let start = Instant::now();
 
         assert!(process_event(
             &hyprctl,
             &config,
             &mut debounce,
-            DaemonEvent::Line {
-                line: "monitoradded>>DP-1".to_string(),
+            &mut focus_debounce,
+            DaemonEvent::Monitor {
+                kind: MonitorEventKind::Added,
                 at: start,
             },
         )
@@ -533,8 +1047,9 @@ mod tests {
             &hyprctl,
             &config,
             &mut debounce,
-            DaemonEvent::Line {
-                line: "monitorremovedv2>>1,DP-1,desc".to_string(),
+            &mut focus_debounce,
+            DaemonEvent::Monitor {
+                kind: MonitorEventKind::Removed,
                 at: start + Duration::from_millis(50),
             },
         )
@@ -543,6 +1058,7 @@ mod tests {
             &hyprctl,
             &config,
             &mut debounce,
+            &mut focus_debounce,
             DaemonEvent::Timeout {
                 at: start + Duration::from_millis(260),
             },
@@ -565,10 +1081,10 @@ mod tests {
 
         let event = source.next_event().expect("event");
         match event {
-            DaemonEvent::Line { line, .. } => {
-                assert_eq!(line, "monitoradded>>DP-1");
+            DaemonEvent::Monitor { kind, .. } => {
+                assert_eq!(kind, MonitorEventKind::Added);
             }
-            _ => panic!("expected line event"),
+            _ => panic!("expected monitor event"),
         }
     }
 
@@ -611,7 +1127,7 @@ mod tests {
         assert!(rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitoradded>>DP-1",
+            MonitorEventKind::Added,
             &mut debounce,
             start,
         )
@@ -619,7 +1135,7 @@ mod tests {
         assert!(rebalance_for_event_at(
             &hyprctl,
             &config,
-            "monitorremovedv2>>1,DP-1,desc",
+            MonitorEventKind::Removed,
             &mut debounce,
             start + Duration::from_millis(250),
         )
