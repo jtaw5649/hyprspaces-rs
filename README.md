@@ -4,6 +4,10 @@
 
 hyprspaces aims to make paired workspaces feel effortless across multiple monitors, with a small Rust CLI that mirrors Hyprland's own workflows.
 
+## Status
+
+This repository is the legacy Rust CLI. The native Hyprland plugin is being developed at https://github.com/jtaw5649/hyprspaces.
+
 ## At a Glance
 
 | Goal | What You Get | Why It Matters |

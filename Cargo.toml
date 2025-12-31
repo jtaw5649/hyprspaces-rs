@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 description = "Paired dual-monitor workspace management for Hyprland"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/jtaw5649/hyprspaces"
+repository = "https://github.com/jtaw5649/hyprspaces-rs"
 readme = "README.md"
 
 [dependencies]
