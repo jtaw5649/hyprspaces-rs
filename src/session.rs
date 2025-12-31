@@ -294,8 +294,13 @@ fn restore_cold_session(
             && score > second_best
         {
             let snapshot_client = &snapshot.clients[idx];
-            if client.workspace.id != snapshot_client.workspace_id {
-                let argument = format!("{},address:{}", workspace_target(snapshot_client), client.address);
+            if !snapshot_matches_current(
+                snapshot_client,
+                client.workspace.id,
+                client.workspace.name.as_deref(),
+            ) {
+                let argument =
+                    format!("{},address:{}", workspace_target(snapshot_client), client.address);
                 batch.dispatch("movetoworkspacesilent", &argument);
             }
             used_snapshot.insert(idx);

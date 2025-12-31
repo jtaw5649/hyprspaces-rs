@@ -320,6 +320,62 @@ fn restore_cold_skips_special_fallback() {
 }
 
 #[test]
+fn restore_cold_moves_special_workspace_by_name() {
+    let config = test_config();
+    let snapshot = SessionSnapshot {
+        version: 1,
+        created_at: 0,
+        signature: None,
+        paired_offset: 10,
+        workspace_count: 10,
+        focus: hyprspaces::session::SnapshotFocus {
+            monitor: None,
+            workspace_id: 0,
+        },
+        monitors: Vec::new(),
+        workspaces: Vec::new(),
+        clients: vec![hyprspaces::session::SnapshotClient {
+            address: "0xabc".to_string(),
+            class: None,
+            title: None,
+            initial_class: None,
+            initial_title: None,
+            app_id: Some("org.example.Term".to_string()),
+            pid: None,
+            workspace_id: 0,
+            workspace_name: Some("special:term".to_string()),
+            paired_slot: 0,
+        }],
+    };
+    let current_clients = vec![ClientInfo {
+        address: "0xdef".to_string(),
+        workspace: WorkspaceRef {
+            id: 0,
+            name: Some("special:music".to_string()),
+        },
+        class: None,
+        title: None,
+        initial_class: None,
+        initial_title: None,
+        app_id: Some("org.example.Term".to_string()),
+        pid: None,
+    }];
+
+    let batch = restore_batch(
+        &snapshot,
+        RestoreMode::Cold,
+        None,
+        &current_clients,
+        &config,
+    );
+
+    assert_eq!(
+        batch.to_argument(),
+        "dispatch movetoworkspacesilent special:term,address:0xdef"
+    );
+}
+
+#[test]
 fn restore_auto_uses_same_when_signature_matches() {
     let config = test_config();
     let snapshot = SessionSnapshot {
