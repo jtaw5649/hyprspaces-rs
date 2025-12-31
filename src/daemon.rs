@@ -20,6 +20,7 @@ pub fn should_rebalance(line: &str) -> bool {
 }
 
 pub const DEFAULT_REBALANCE_DEBOUNCE: Duration = Duration::from_millis(200);
+pub const DEFAULT_FOCUS_SWITCH_DEBOUNCE: Duration = Duration::from_millis(100);
 
 pub enum DaemonEvent {
     Line { line: String, at: Instant },
@@ -188,8 +189,79 @@ impl RebalanceDebounce {
     }
 }
 
+pub struct FocusSwitchDebounce {
+    min_interval: Duration,
+    last_switch: Option<Instant>,
+    last_workspace: Option<u32>,
+}
+
+impl FocusSwitchDebounce {
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            min_interval,
+            last_switch: None,
+            last_workspace: None,
+        }
+    }
+
+    fn should_switch(&mut self, now: Instant, workspace: u32) -> bool {
+        let recent_same_workspace = match (self.last_switch, self.last_workspace) {
+            (Some(last_switch), Some(last_workspace)) if last_workspace == workspace => {
+                now.duration_since(last_switch) < self.min_interval
+            }
+            _ => false,
+        };
+        if recent_same_workspace {
+            return false;
+        }
+        self.last_switch = Some(now);
+        self.last_workspace = Some(workspace);
+        true
+    }
+}
+
 pub fn socket2_path(runtime_dir: &str, instance_signature: &str) -> String {
     format!("{}/hypr/{}/.socket2.sock", runtime_dir, instance_signature)
+}
+
+fn parse_first_field(payload: &str) -> Option<u32> {
+    payload
+        .split_once(',')
+        .and_then(|(first, _)| first.parse().ok())
+}
+
+fn parse_second_field(payload: &str) -> Option<u32> {
+    payload
+        .split_once(',')
+        .and_then(|(_, second)| second.parse().ok())
+}
+
+fn workspace_id_from_event(
+    hyprctl: &dyn HyprlandIpc,
+    line: &str,
+) -> Result<Option<u32>, HyprctlError> {
+    let (name, payload) = match line.split_once(">>") {
+        Some((name, payload)) => (name, payload),
+        None => return Ok(None),
+    };
+    match name {
+        "focusedmonv2" => Ok(parse_second_field(payload)),
+        "focusedmon" => Ok(parse_second_field(payload)),
+        "workspacev2" => Ok(parse_first_field(payload)),
+        "workspace" => Ok(payload.parse().ok()),
+        "activewindowv2" => {
+            let address = payload.trim();
+            if address.is_empty() {
+                return Ok(None);
+            }
+            let clients = hyprctl.clients()?;
+            Ok(clients
+                .iter()
+                .find(|client| client.address == address)
+                .map(|client| client.workspace.id))
+        }
+        _ => Ok(None),
+    }
 }
 
 pub fn rebalance_batch_for_event(
@@ -235,6 +307,39 @@ pub fn rebalance_for_event(
     }
 }
 
+pub fn focus_switch_for_event(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    line: &str,
+    debounce: &mut FocusSwitchDebounce,
+) -> Result<bool, HyprctlError> {
+    focus_switch_for_event_at(hyprctl, config, line, debounce, Instant::now())
+}
+
+pub fn focus_switch_for_event_at(
+    hyprctl: &dyn HyprlandIpc,
+    config: &Config,
+    line: &str,
+    debounce: &mut FocusSwitchDebounce,
+    now: Instant,
+) -> Result<bool, HyprctlError> {
+    let workspace_id = match workspace_id_from_event(hyprctl, line)? {
+        Some(workspace_id) if workspace_id > 0 => workspace_id,
+        _ => return Ok(false),
+    };
+    if !debounce.should_switch(now, workspace_id) {
+        return Ok(false);
+    }
+    let batch = crate::hyprctl::paired_switch_batch(
+        &config.primary_monitor,
+        &config.secondary_monitor,
+        workspace_id,
+        config.paired_offset,
+    );
+    hyprctl.batch(&batch)?;
+    Ok(true)
+}
+
 pub fn rebalance_for_event_debounced(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
@@ -255,15 +360,23 @@ pub fn flush_pending_rebalance(
 pub fn process_event(
     hyprctl: &dyn HyprlandIpc,
     config: &Config,
-    debounce: &mut RebalanceDebounce,
+    rebalance_debounce: &mut RebalanceDebounce,
+    focus_debounce: &mut FocusSwitchDebounce,
     event: DaemonEvent,
 ) -> Result<bool, HyprctlError> {
     match event {
         DaemonEvent::Line { line, at } => {
-            rebalance_for_event_at(hyprctl, config, &line, debounce, at)
+            let mut did_work = false;
+            if focus_switch_for_event_at(hyprctl, config, &line, focus_debounce, at)? {
+                did_work = true;
+            }
+            if rebalance_for_event_at(hyprctl, config, &line, rebalance_debounce, at)? {
+                did_work = true;
+            }
+            Ok(did_work)
         }
         DaemonEvent::Timeout { at } => {
-            flush_pending_rebalance_at(hyprctl, config, debounce, at)
+            flush_pending_rebalance_at(hyprctl, config, rebalance_debounce, at)
         }
         DaemonEvent::Disconnected => Ok(false),
     }
@@ -315,13 +428,13 @@ fn flush_pending_rebalance_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_name, flush_pending_rebalance_at, process_event, rebalance_all,
-        rebalance_batch_for_event, rebalance_for_event, rebalance_for_event_at,
-        should_rebalance, socket2_path, DaemonEvent, EventSource, RebalanceDebounce,
-        Socket2EventSource,
+        event_name, flush_pending_rebalance_at, focus_switch_for_event_at, process_event,
+        rebalance_all, rebalance_batch_for_event, rebalance_for_event, rebalance_for_event_at,
+        should_rebalance, socket2_path, DaemonEvent, EventSource, FocusSwitchDebounce,
+        RebalanceDebounce, Socket2EventSource,
     };
     use crate::config::Config;
-    use crate::hyprctl::{Hyprctl, HyprctlRunner, rebalance_batch};
+    use crate::hyprctl::{Hyprctl, HyprctlRunner, paired_switch_batch, rebalance_batch};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::io::Write;
@@ -351,6 +464,109 @@ mod tests {
     }
 
     #[test]
+    fn switches_pair_on_focusedmonv2_event() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            vec![
+                "--batch".to_string(),
+                paired_switch_batch("DP-1", "HDMI-A-1", 3, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn switches_pair_on_activewindowv2_event() {
+        let runner = RecordingRunner::with_clients(
+            r#"[{"address":"0x123","workspace":{"id":4}}]"#,
+        );
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "activewindowv2>>0x123",
+            &mut debounce,
+            Instant::now(),
+        )
+        .expect("switch"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1],
+            vec![
+                "--batch".to_string(),
+                paired_switch_batch("DP-1", "HDMI-A-1", 4, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn debounces_repeated_focus_events() {
+        let runner = RecordingRunner::default();
+        let hyprctl = Hyprctl::new(runner.clone());
+        let config = Config {
+            primary_monitor: "DP-1".to_string(),
+            secondary_monitor: "HDMI-A-1".to_string(),
+            paired_offset: 2,
+            workspace_count: 2,
+            wrap_cycling: true,
+        };
+        let mut debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
+        let start = Instant::now();
+
+        assert!(focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            start,
+        )
+        .expect("switch"));
+        assert!(!focus_switch_for_event_at(
+            &hyprctl,
+            &config,
+            "focusedmonv2>>DP-1,3",
+            &mut debounce,
+            start + Duration::from_millis(10),
+        )
+        .expect("debounced"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
     fn builds_socket2_path() {
         let path = socket2_path("/run/user/1000", "abc");
 
@@ -374,12 +590,28 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingRunner {
         calls: Rc<RefCell<Vec<Vec<String>>>>,
+        clients_json: Option<String>,
     }
 
     impl HyprctlRunner for RecordingRunner {
         fn run(&self, args: &[String]) -> Result<String, crate::hyprctl::HyprctlError> {
             self.calls.borrow_mut().push(args.to_vec());
+            if args == ["-j".to_string(), "clients".to_string()] {
+                return match self.clients_json.as_ref() {
+                    Some(payload) => Ok(payload.clone()),
+                    None => Ok("ok".to_string()),
+                };
+            }
             Ok("ok".to_string())
+        }
+    }
+
+    impl RecordingRunner {
+        fn with_clients(clients_json: &str) -> Self {
+            Self {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                clients_json: Some(clients_json.to_string()),
+            }
         }
     }
 
@@ -517,12 +749,14 @@ mod tests {
             wrap_cycling: true,
         };
         let mut debounce = RebalanceDebounce::new(Duration::from_millis(200));
+        let mut focus_debounce = FocusSwitchDebounce::new(Duration::from_millis(100));
         let start = Instant::now();
 
         assert!(process_event(
             &hyprctl,
             &config,
             &mut debounce,
+            &mut focus_debounce,
             DaemonEvent::Line {
                 line: "monitoradded>>DP-1".to_string(),
                 at: start,
@@ -533,6 +767,7 @@ mod tests {
             &hyprctl,
             &config,
             &mut debounce,
+            &mut focus_debounce,
             DaemonEvent::Line {
                 line: "monitorremovedv2>>1,DP-1,desc".to_string(),
                 at: start + Duration::from_millis(50),
@@ -543,6 +778,7 @@ mod tests {
             &hyprctl,
             &config,
             &mut debounce,
+            &mut focus_debounce,
             DaemonEvent::Timeout {
                 at: start + Duration::from_millis(260),
             },

@@ -439,14 +439,22 @@ pub fn run() -> Result<(), CliError> {
                 &socket_path,
                 daemon::DEFAULT_REBALANCE_DEBOUNCE,
             )?;
-            let mut debounce =
+            let mut rebalance_debounce =
                 daemon::RebalanceDebounce::new(daemon::DEFAULT_REBALANCE_DEBOUNCE);
+            let mut focus_debounce =
+                daemon::FocusSwitchDebounce::new(daemon::DEFAULT_FOCUS_SWITCH_DEBOUNCE);
             loop {
                 let event = daemon::EventSource::next_event(&mut *source)?;
                 match event {
                     daemon::DaemonEvent::Disconnected => break,
                     event => {
-                        let _ = daemon::process_event(hyprctl, &config, &mut debounce, event)?;
+                        let _ = daemon::process_event(
+                            hyprctl,
+                            &config,
+                            &mut rebalance_debounce,
+                            &mut focus_debounce,
+                            event,
+                        )?;
                     }
                 }
             }
