@@ -47,6 +47,10 @@ pub enum Command {
         command: PairedCommand,
     },
     Daemon,
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     Setup {
         #[command(subcommand)]
         command: SetupCommand,
@@ -73,6 +77,27 @@ pub enum PairedCommand {
     },
     #[command(name = "grab-rogue")]
     GrabRogue,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCommand {
+    Save {
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
+    Restore {
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = SessionRestoreMode::Auto)]
+        mode: SessionRestoreMode,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRestoreMode {
+    Auto,
+    Same,
+    Cold,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
@@ -423,6 +448,7 @@ pub fn run() -> Result<(), CliError> {
                 }
             }
         }
+        Command::Session { .. } => {}
         Command::Setup { command } => match command {
             SetupCommand::Install(args) => {
                 handle_setup_install(hyprctl, &paths, &bin_path, args.waybar)?;

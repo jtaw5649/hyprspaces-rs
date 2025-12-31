@@ -1,6 +1,8 @@
 use clap::{CommandFactory, Parser};
 
-use hyprspaces::cli::{Cli, Command, PairedCommand, SetupCommand};
+use hyprspaces::cli::{
+    Cli, Command, PairedCommand, SessionCommand, SessionRestoreMode, SetupCommand,
+};
 
 #[test]
 fn parses_paired_switch() {
@@ -57,4 +59,38 @@ fn parses_status_command() {
     let cli = Cli::try_parse_from(["hyprspaces", "status"]);
 
     assert!(cli.is_ok());
+}
+
+#[test]
+fn parses_session_save() {
+    let cli = Cli::try_parse_from(["hyprspaces", "session", "save"]).expect("parse");
+
+    match cli.command {
+        Command::Session {
+            command: SessionCommand::Save { path },
+        } => assert!(path.is_none()),
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
+fn parses_session_restore_mode() {
+    let cli = Cli::try_parse_from([
+        "hyprspaces",
+        "session",
+        "restore",
+        "--mode",
+        "cold",
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Command::Session {
+            command: SessionCommand::Restore { mode, path },
+        } => {
+            assert_eq!(mode, SessionRestoreMode::Cold);
+            assert!(path.is_none());
+        }
+        _ => panic!("unexpected command"),
+    }
 }
