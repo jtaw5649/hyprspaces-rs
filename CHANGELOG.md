@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Daemon now switches both monitors on focus events (focusedmon/workspace/activewindowv2) while preserving the originating monitor focus across socket2 and native IPC.
-- `paired move-window` preserves the originating monitor focus when moving windows to paired workspaces.
 
 ## [1.0.0] - 2025-12-30
 
