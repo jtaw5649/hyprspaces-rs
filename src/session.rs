@@ -123,7 +123,11 @@ impl SessionSnapshot {
         let snapshot_clients = clients
             .into_iter()
             .map(|client| {
-                let paired_slot = normalize_workspace(client.workspace.id, config.paired_offset);
+                let paired_slot = if is_special_workspace_name(client.workspace.name.as_deref()) {
+                    client.workspace.id
+                } else {
+                    normalize_workspace(client.workspace.id, config.paired_offset)
+                };
                 SnapshotClient {
                     address: client.address,
                     class: client.class,
@@ -231,14 +235,17 @@ fn restore_same_session(snapshot: &SessionSnapshot, current_clients: &[ClientInf
     let mut current_by_address = HashMap::new();
 
     for client in current_clients {
-        current_by_address.insert(client.address.as_str(), client.workspace.id);
+        current_by_address.insert(
+            client.address.as_str(),
+            (client.workspace.id, client.workspace.name.as_deref()),
+        );
     }
 
     for client in &snapshot.clients {
-        if let Some(current_workspace) = current_by_address.get(client.address.as_str())
-            && *current_workspace != client.workspace_id
+        if let Some((current_id, current_name)) = current_by_address.get(client.address.as_str())
+            && !snapshot_matches_current(client, *current_id, *current_name)
         {
-            let argument = format!("{},address:{}", client.workspace_id, client.address);
+            let argument = format!("{},address:{}", workspace_target(client), client.address);
             batch.dispatch("movetoworkspacesilent", &argument);
         }
     }
@@ -288,7 +295,7 @@ fn restore_cold_session(
         {
             let snapshot_client = &snapshot.clients[idx];
             if client.workspace.id != snapshot_client.workspace_id {
-                let argument = format!("{},address:{}", snapshot_client.workspace_id, client.address);
+                let argument = format!("{},address:{}", workspace_target(snapshot_client), client.address);
                 batch.dispatch("movetoworkspacesilent", &argument);
             }
             used_snapshot.insert(idx);
@@ -298,6 +305,9 @@ fn restore_cold_session(
 
     for client in current_clients {
         if matched_addresses.contains(client.address.as_str()) {
+            continue;
+        }
+        if is_special_workspace_name(client.workspace.name.as_deref()) {
             continue;
         }
         let paired_slot = normalize_workspace(client.workspace.id, config.paired_offset);
@@ -344,6 +354,29 @@ fn match_score(snapshot: &SnapshotClient, client: &ClientInfo) -> u8 {
     score
 }
 
+fn workspace_target(snapshot: &SnapshotClient) -> String {
+    if is_special_workspace_name(snapshot.workspace_name.as_deref()) {
+        snapshot
+            .workspace_name
+            .clone()
+            .unwrap_or_else(|| snapshot.workspace_id.to_string())
+    } else {
+        snapshot.workspace_id.to_string()
+    }
+}
+
+fn snapshot_matches_current(
+    snapshot: &SnapshotClient,
+    current_id: u32,
+    current_name: Option<&str>,
+) -> bool {
+    if is_special_workspace_name(snapshot.workspace_name.as_deref()) {
+        snapshot.workspace_name.as_deref() == current_name
+    } else {
+        snapshot.workspace_id == current_id
+    }
+}
+
 fn normalized_eq(left: &Option<String>, right: &Option<String>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => normalize_value(left) == normalize_value(right),
@@ -353,6 +386,10 @@ fn normalized_eq(left: &Option<String>, right: &Option<String>) -> bool {
 
 fn normalize_value(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+fn is_special_workspace_name(name: Option<&str>) -> bool {
+    name.is_some_and(|value| value.starts_with("special:"))
 }
 
 fn current_signature() -> Option<String> {
